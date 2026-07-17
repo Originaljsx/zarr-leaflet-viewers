@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Zarr Leaflet Viewers</title>
+<style>
+  body { font-family: monospace; background: #111; color: #eee; max-width: 640px; margin: 60px auto; padding: 0 16px; }
+  a { color: #7fd4ff; }
+  li { margin: 12px 0; }
+  .sub { color: #999; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Zarr Leaflet Viewers</h1>
+<p class="sub">Leaflet viewers rendering multiscale zarr v3 pyramids directly in the browser
+(via a <a href="https://github.com/Originaljsx/zarr-maps">zarr-maps fork</a>), streamed from CloudFront.
+No backend, no tiles server.</p>
+<ul>
+  <li><a href="swot-leaflet.html">SWOT SSHA — Expert 2 km / Unsmoothed 250 m</a>
+    <div class="sub">sea-surface height anomaly swaths, cycle 42; slice slider, click for value</div></li>
+  <li><a href="mur-leaflet.html">MUR SST 1 km — Nov–Dec 2025</a>
+    <div class="sub">global sea-surface temperature + anomaly; day slider, click for value (first load ~30 s)</div></li>
+</ul>
+</body>
+</html>
