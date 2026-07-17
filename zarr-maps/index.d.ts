@@ -298,6 +298,50 @@ declare function fetchSpecFillValue(store: zarr.FetchStore, zarrArray: zarr.Arra
  * @returns Detected  CRS as a string (e.g., 'EPSG:4326' or 'EPSG:3857'. See {@link CRS}).
  */
 declare function detectCRS(attrs: Record<string, any>, arr: zarr.Array<any> | null, xyLimits?: XYLimitsProps): Promise<CRS>;
+/**
+ * `zarr.FetchStore` subclass that adds a shared, bounded, de-duplicated
+ * cache across every `get`/`getRange` call made through it.
+ *
+ * Without this, every rendered 256px map tile independently calls
+ * `zarr.get()` for its own pixel window (`renderTile` in
+ * `zarr-layer-provider.ts`), and at low zoom many tiles' windows land in
+ * the *same* underlying chunk/shard byte range -- e.g. a world view where
+ * ~15 unique level-5 chunks cover the visible area was observed issuing
+ * ~105 chunk requests (roughly one per overlapping tile), with no
+ * cross-tile cache and no de-duplication of concurrent identical
+ * requests for the same bytes.
+ *
+ * Wrapping the store itself (rather than caching at a higher, per-tile
+ * decoded-slice level) means every read path through it -- data-variable
+ * chunks, coordinate arrays, level/array metadata -- benefits uniformly.
+ * The cache key is the store's absolute chunk/shard path plus, for
+ * `getRange`, the requested byte range; that already uniquely identifies
+ * the requested bytes, so no separate level/selector-hash component is
+ * needed: a selector change (e.g. a different day) that lands in a
+ * *different* chunk naturally produces a different path/range and misses
+ * the cache, while one that happens to share the *same* underlying
+ * chunk/shard correctly (and safely) reuses the cached bytes -- the cache
+ * stores raw, pre-decode bytes, and it's still the caller's own
+ * slice/selector args (applied downstream by zarrita's decode) that
+ * determine what's read back out of them.
+ *
+ * The per-call `AbortSignal` (wired in from `ZarrLayerProvider`'s
+ * per-tile `AbortController`) is honored for the *calling* tile's own
+ * await via {@link raceAbort}, but deliberately not forwarded to the
+ * underlying network request: two different tiles can want the same
+ * shard concurrently under two different signals, and one tile being
+ * pruned (panned away, superseded) must not cancel a fetch another tile
+ * is still waiting on. The underlying fetch always runs to completion and
+ * populates the shared cache -- a net win even for a since-pruned tile's
+ * request, since the bytes are likely to be reused shortly after by a
+ * neighboring tile or a re-pan back into view.
+ */
+declare class CachingFetchStore extends zarr.FetchStore {
+    private readonly bytes;
+    constructor(url: string | URL, maxEntries?: number);
+    get(key: Parameters<zarr.FetchStore['get']>[0], options?: RequestInit): Promise<Uint8Array | undefined>;
+    getRange(key: Parameters<zarr.FetchStore['getRange']>[0], range: Parameters<zarr.FetchStore['getRange']>[1], options?: RequestInit): Promise<Uint8Array | undefined>;
+}
 
 declare const vertexShaderSource = "#version 300 es\n  in vec2 a_position;\n  in vec2 a_texCoord;\n  out vec2 v_texCoord;\n\n  void main() {\n      gl_Position = vec4(a_position, 0.0, 1.0);\n      v_texCoord = a_texCoord;\n  }\n";
 declare const fragmentShaderSource = "#version 300 es\n  precision highp float;\n\n  in vec2 v_texCoord;\n\n  uniform sampler2D u_dataTexture;\n  uniform sampler2D u_colorRamp;\n\n  uniform float u_min;\n  uniform float u_max;\n\n  uniform float u_noDataMin;\n  uniform float u_noDataMax;\n\n  uniform bool  u_useFillValue;\n  uniform float u_fillValue;\n\n  uniform float u_scaleFactor;\n  uniform float u_addOffset;\n\n  out vec4 fragColor;\n\n  void main() {\n      float raw = texture(u_dataTexture, vec2(v_texCoord.x, 1.0 - v_texCoord.y)).r;\n      // float raw = texture(u_dataTexture, v_texCoord).r;\n\n      float value = raw * u_scaleFactor + u_addOffset;\n\n      bool isNaN = (value != value);\n      bool isNoData = (value < u_noDataMin || value > u_noDataMax);\n      bool isFill = (u_useFillValue && abs(value - u_fillValue) < 1e-6);\n\n      if (isNaN || isNoData || isFill) {\n          discard;\n      }\n\n      float normalized = clamp((value - u_min) / (u_max - u_min), 0.0, 1.0);\n\n      fragColor = texture(u_colorRamp, vec2(normalized, 0.5));\n  }\n";
@@ -337,4 +381,4 @@ declare function decodeCFTime(values: number[], units: string, calendar?: CFCale
 declare function lonDegToMercX(lonDeg: number): number;
 declare function latDegToMercY(latDeg: number): number;
 
-export { CFCalendar, CF_MAPPINGS, CRS, DEFAULT_COLORMAP, DEFAULT_OPACITY, DEFAULT_SCALE, DIMENSION_ALIASES_DEFAULT, DataSliceProps, DimIndicesProps, DimensionNamesProps, DimensionValues, EARTH_RADIUS, MAX_LAT, SliceArgs, XYLimitsProps, ZarrLevelMetadata, ZarrSelectors, calculateNearestIndex, calculateSliceArgs, createColorRampTexture, createProgram, createShader, decodeCFTime, detectCRS, extractNoDataMetadata, fetchSpecFillValue, fragmentShaderSource, getXYLimits, identifyDimensionIndices, initZarrDataset, latDegToMercY, loadDimensionValues, lonDegToMercX, normalizeMultiscaleDatasets, openLevelArray, parseCFUnits, resolveNoDataRange, vertexShaderSource };
+export { CFCalendar, CF_MAPPINGS, CRS, CachingFetchStore, DEFAULT_COLORMAP, DEFAULT_OPACITY, DEFAULT_SCALE, DIMENSION_ALIASES_DEFAULT, DataSliceProps, DimIndicesProps, DimensionNamesProps, DimensionValues, EARTH_RADIUS, MAX_LAT, SliceArgs, XYLimitsProps, ZarrLevelMetadata, ZarrSelectors, calculateNearestIndex, calculateSliceArgs, createColorRampTexture, createProgram, createShader, decodeCFTime, detectCRS, extractNoDataMetadata, fetchSpecFillValue, fragmentShaderSource, getXYLimits, identifyDimensionIndices, initZarrDataset, latDegToMercY, loadDimensionValues, lonDegToMercX, normalizeMultiscaleDatasets, openLevelArray, parseCFUnits, resolveNoDataRange, vertexShaderSource };

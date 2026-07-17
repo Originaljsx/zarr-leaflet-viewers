@@ -12,6 +12,7 @@ import {
   CF_MAPPINGS,
   CMRmap,
   CMRmapR,
+  CachingFetchStore,
   DEFAULT_COLORMAP,
   DEFAULT_OPACITY,
   DEFAULT_SCALE,
@@ -197,7 +198,7 @@ import {
   viridisR,
   winter,
   winterR
-} from "./chunk-33PWJXCJ.js";
+} from "./chunk-PIN4HMQG.js";
 import "./chunk-RGIOIEUU.js";
 export {
   Accent,
@@ -213,6 +214,7 @@ export {
   CF_MAPPINGS,
   CMRmap,
   CMRmapR,
+  CachingFetchStore,
   DEFAULT_COLORMAP,
   DEFAULT_OPACITY,
   DEFAULT_SCALE,
