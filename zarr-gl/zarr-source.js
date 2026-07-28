@@ -17,6 +17,8 @@
 
 import * as zarr from 'zarrita'
 
+import { CachingStore } from './caching-store.js'
+
 const LON_NAMES = ['lon', 'longitude', 'x', 'Longitude', 'X', 'lng']
 const LAT_NAMES = ['lat', 'latitude', 'y', 'Latitude', 'Y']
 
@@ -110,17 +112,20 @@ function extentFromTransform(transform, shape, registration) {
 }
 
 export class ZarrSource {
-  constructor({ url, variable, selectors = {} }) {
+  constructor({ url, variable, selectors = {}, cacheBytes }) {
     this.url = url
     this.variable = variable
     this.selectors = { ...selectors }
+    this.cacheBytes = cacheBytes
     this.levels = []
     this.dimensionValues = {}
     this.readyPromise = this._open()
   }
 
   async _open() {
-    this.store = new zarr.FetchStore(this.url)
+    // Cached and deduplicated: tiles are far smaller than chunks, so a single
+    // viewport resolves many tiles to the same byte ranges.
+    this.store = new CachingStore(new zarr.FetchStore(this.url), { maxBytes: this.cacheBytes })
     this.root = zarr.root(this.store)
     const group = await zarr.open(this.root, { kind: 'group' })
     const attrs = group.attrs ?? {}

@@ -58,12 +58,21 @@ export const ZarrGLLayer = L.Layer.extend({
     /** [min, max] data values mapped across the colormap. */
     clim: [0, 1],
     opacity: 1,
-    tileSize: 256,
+    /**
+     * Tile size in pixels. Larger than a raster tile server's 256 on purpose:
+     * chunk size is fixed by the store (450x450 inner chunks for the MUR
+     * pyramid) while this is ours to choose, and a 256 px tile at z9 covers
+     * only ~37 cells, so it discards most of every chunk it decodes. 512
+     * quarters the number of reads covering a viewport.
+     */
+    tileSize: 512,
     maxZoom: 12,
     /** Extra viewport fraction to keep rendered, as in `L.Renderer`. */
     padding: 0.1,
-    /** Concurrent tile reads. */
-    concurrency: 6,
+    /** Concurrent tile reads. Stores are served over HTTP/2 in practice. */
+    concurrency: 16,
+    /** Byte budget for the store's byte-range cache. */
+    cacheBytes: 256 * 1024 * 1024,
     /** Textures kept for parent-tile fallback before the oldest are dropped. */
     tileCacheSize: 256,
     pane: 'overlayPane',
@@ -81,6 +90,7 @@ export const ZarrGLLayer = L.Layer.extend({
       url: this.options.url,
       variable: this.options.variable,
       selectors: this.options.selectors,
+      cacheBytes: this.options.cacheBytes,
     })
     this.readyPromise = this.source.readyPromise.then(
       () => {

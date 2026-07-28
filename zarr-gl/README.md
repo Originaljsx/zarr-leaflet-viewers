@@ -16,6 +16,9 @@ const layer = new ZarrGLLayer({
   selectors: { time: 0 },      // index per non-spatial dimension
   opacity: 1,
   maxZoom: 12,
+  tileSize: 512,               // see "Tile size vs chunk size"
+  concurrency: 16,
+  cacheBytes: 256 * 1024 * 1024,
 }).addTo(map)
 
 await layer.readyPromise
@@ -67,6 +70,26 @@ dataset extent — and reusing it for every level — leaves the layer short of 
 antimeridian by half a coarse cell on each side, which is where the seam in the
 `L.GridLayer` implementation came from.
 
+## Tile size vs chunk size
+
+Chunk shape is fixed when the store is written; tile size is the layer's to
+choose, and the two want to be close. The MUR pyramid shards 1800x1800 chunks
+into 450x450 inner chunks, while a 256 px tile at z9 spans only ~37 cells — so
+such a tile decodes a chunk to use ~0.7% of it, and its neighbours re-decode the
+same chunk. Hence `tileSize` defaults to 512, and `CachingStore` caches decoded
+byte ranges so overlapping tiles share one fetch:
+
+| same z9 viewport | before | after |
+| --- | --- | --- |
+| tile reads | 48 | 15 |
+| network requests | 58 (only **2** distinct ranges) | 6 (all distinct) |
+| bytes transferred | 10.4 MB | 5.1 MB |
+
+Profiling the same view put drawing at 0.1 ms per frame with no long tasks and no
+dropped frames, and decode plus stitch at 6.8 ms per tile — so the cost of this
+layer is essentially the cost of getting bytes, and these two knobs are what move
+it. Neither the GL path nor the decode path is worth optimising until they are.
+
 ## Files
 
 | file | role |
@@ -75,6 +98,7 @@ antimeridian by half a coarse cell on each side, which is where the seam in the
 | `zarr-source.js` | store metadata, per-level extents, windowed reads |
 | `shaders.js` | vertex/fragment shaders, program and colormap helpers |
 | `projection.js` | `map.options.crs` → shader projection coefficients |
+| `caching-store.js` | byte-range cache and request dedupe in front of `FetchStore` |
 
 ## Notes and limits
 
