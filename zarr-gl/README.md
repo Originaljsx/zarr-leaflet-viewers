@@ -20,6 +20,7 @@ const layer = new ZarrGLLayer({
   concurrency: 16,
   cacheBytes: 256 * 1024 * 1024,
   fadeDuration: 200,           // 0 to have tiles appear at once
+  crossfade: false,            // true to hold coarser data under a fading tile
   prefetchParents: true,
   updateWhenIdle: false,       // true to only load once the map stops
 }).addTo(map)
@@ -107,9 +108,12 @@ tiles so zooming out has data to show immediately, and the queue is served
 visible-tiles-first, centre outwards, dropping tiles that leave the view before
 their turn.
 
-A new tile fades in over `fadeDuration`, drawn over the coarser tile it replaces
-so the transition crosses between two textures rather than dissolving to the
-basemap and back. The canvas is only re-sized when its dimensions actually change,
+A new tile fades in over `fadeDuration`, which means the area it covers is briefly
+translucent. `crossfade: true` instead holds the coarser tile it replaces at full
+opacity underneath, so nothing dips towards the basemap — but the two differ only
+in resolution, which makes that transition close to invisible.
+
+The canvas is only re-sized when its dimensions actually change,
 since assigning `width`/`height` blanks the drawing buffer — doing that on every
 pan is what made the layer flash black.
 

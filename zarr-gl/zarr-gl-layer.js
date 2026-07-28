@@ -77,6 +77,13 @@ export const ZarrGLLayer = L.Layer.extend({
     tileCacheSize: 256,
     /** Milliseconds a newly loaded tile takes to fade in; 0 disables. */
     fadeDuration: 200,
+    /**
+     * Hold the coarser tile a fading tile replaces at full opacity underneath
+     * it. Nothing dips towards the basemap, but since the two differ only in
+     * resolution the transition is close to invisible; off, a tile visibly
+     * fades in and the area it covers is briefly translucent.
+     */
+    crossfade: false,
     /** Load the parent zoom's tiles too, so zooming out has data to show. */
     prefetchParents: true,
     /** Only reconcile tiles once the map stops moving, as `L.GridLayer` can. */
@@ -611,11 +618,10 @@ export const ZarrGLLayer = L.Layer.extend({
       const alpha = own && fade > 0 ? Math.min(1, (now - own.createdAt) / fade) : 1
       if (alpha < 1) {
         fading = true
-        // The coarser tile this one replaces, drawn underneath at full opacity,
-        // so the fade crosses between two textures instead of dissolving to the
-        // basemap and back.
-        const under = this._findAncestor(tile)
-        if (under) this._drawTile(tile, under, 1)
+        if (this.options.crossfade) {
+          const under = this._findAncestor(tile)
+          if (under) this._drawTile(tile, under, 1)
+        }
       }
       this._drawTile(tile, cached, alpha)
     }
