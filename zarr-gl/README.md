@@ -19,7 +19,7 @@ const layer = new ZarrGLLayer({
   tileSize: 512,               // see "Tile size vs chunk size"
   concurrency: 16,
   cacheBytes: 256 * 1024 * 1024,
-  fadeDuration: 200,           // 0 to have tiles appear at once
+  fadeDuration: 500,           // 0 to have tiles appear at once
   prefetchParents: true,
   updateWhenIdle: false,       // true to only load once the map stops
 }).addTo(map)
@@ -108,12 +108,11 @@ visible-tiles-first, centre outwards, dropping tiles that leave the view before
 their turn.
 
 Whatever texture stands in a tile's place ramps up over `fadeDuration` if it just
-arrived — the tile itself, or a coarser stand-in appearing where nothing had been
-read yet — with the texture it replaces held underneath at full opacity. So the
-visible transition is where resolution actually changes, typically a panned edge
-going blurry to sharp, and no area ever dips towards the basemap. Fading *from*
-transparent instead is not worth it: with a pyramid there is nearly always coarser
-data underneath, so every tile in the viewport would flash as it re-appeared.
+arrived — the tile itself, or a coarser stand-in appearing at a frontier — with the
+texture it replaces held underneath at full opacity. A texture with nothing beneath
+it is drawn opaque immediately rather than ramping up over the basemap, so no area
+ever dips: fading *from* transparent flashes the whole layer, since with a pyramid
+there is nearly always something being re-covered.
 
 A tile that has not arrived falls back to a cached ancestor *and* to cached tiles
 from a finer zoom covering the same ground, each drawn on its own quad. Coarser
@@ -122,6 +121,15 @@ without the finer pass the view drops to a blurry ancestor — or, when eviction
 taken the ancestors too, to nothing at all, which is the layer appearing to flash
 out and back in on a fast pan-zoom. Relatedly, eviction never drops an ancestor of
 a wanted tile, and only drops anything once the cache is over `tileCacheSize`.
+
+A zoom renders for the zoom being animated *to*, as `L.GridLayer` does, with the
+canvas placed where that content belongs in the view being left so Leaflet's own
+zoom transition grows it into place beside the basemap. CSS-scaling a canvas drawn
+for the outgoing zoom — what `L.Renderer` does — instead leaves it covering
+`1/scale` of the screen mid-animation, and skipping the redraw while
+`_animatingZoom` is set means a chained wheel-zoom never lets the layer catch up
+at all: measured three zoom levels behind, i.e. a canvas covering an eighth of the
+width. Both show up as the layer flashing off.
 
 The canvas is only re-sized when its dimensions actually change,
 since assigning `width`/`height` blanks the drawing buffer — doing that on every

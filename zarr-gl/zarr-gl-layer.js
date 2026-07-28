@@ -76,7 +76,7 @@ export const ZarrGLLayer = L.Layer.extend({
     /** Textures kept for parent-tile fallback before the oldest are dropped. */
     tileCacheSize: 256,
     /** Milliseconds a newly loaded tile takes to fade in; 0 disables. */
-    fadeDuration: 200,
+    fadeDuration: 500,
     /** Load the parent zoom's tiles too, so zooming out has data to show. */
     prefetchParents: true,
     /** Only reconcile tiles once the map stops moving, as `L.GridLayer` can. */
@@ -94,7 +94,7 @@ export const ZarrGLLayer = L.Layer.extend({
     this._queue = []
     this._active = 0
     this._version = 0
-    this._onMove = L.Util.throttle(this._update, this.options.updateInterval, this)
+    this._onMove = L.Util.throttle(this._onViewChange, this.options.updateInterval, this)
     this.source = new ZarrSource({
       url: this.options.url,
       variable: this.options.variable,
@@ -121,7 +121,7 @@ export const ZarrGLLayer = L.Layer.extend({
     this._initCanvas()
     if (this._ready) this._initProgram()
     this.getPane().appendChild(this._canvas)
-    this._reset()
+    this._update()
     return this
   },
 
@@ -155,11 +155,11 @@ export const ZarrGLLayer = L.Layer.extend({
 
   getEvents() {
     const events = {
-      viewreset: this._reset,
-      resize: this._resize,
-      moveend: this._update,
-      zoomend: this._update,
-      zoom: this._onZoom,
+      viewreset: this._onViewChange,
+      resize: this._onViewChange,
+      moveend: this._onViewChange,
+      zoomend: this._onViewChange,
+      zoom: this._onViewChange,
     }
     // Without this the canvas merely translates with the pane during a drag and
     // the newly exposed edge stays empty until the drag ends.
@@ -257,56 +257,69 @@ export const ZarrGLLayer = L.Layer.extend({
 
   /* --------------------------- viewport bookkeeping ------------------------ */
 
-  _resize(event) {
-    this._update(event)
-  },
-
-  _reset() {
+  /**
+   * Leaflet hands its handlers an event object, and `_update` takes a view, so
+   * every listener goes through a wrapper that drops the argument.
+   */
+  _onViewChange() {
     this._update()
-    this._updateTransform(this._map.getCenter(), this._map.getZoom())
   },
 
-  _onZoom() {
-    this._updateTransform(this._map.getCenter(), this._map.getZoom())
-  },
-
+  /**
+   * Render for the zoom being animated *to*, as `L.GridLayer` does, rather than
+   * CSS-scaling a canvas drawn for the zoom being left. The map pane's own
+   * transition then animates it in step with the basemap. Scaling instead left
+   * the canvas covering 1/scale of the screen mid-animation, and a chained
+   * wheel-zoom kept `_animatingZoom` true so the layer never caught up at all —
+   * which is what still flashed it off.
+   */
   _onAnimZoom(event) {
-    this._updateTransform(event.center, event.zoom)
-  },
-
-  /** Keep the already-drawn canvas aligned while Leaflet animates a zoom. */
-  _updateTransform(center, zoom) {
-    if (this._zoom === undefined) return
     const map = this._map
-    const scale = map.getZoomScale(zoom, this._zoom)
-    const position = L.DomUtil.getPosition(this._canvas)
-    const viewHalf = map.getSize().multiplyBy(0.5 + this.options.padding)
-    const currentCenterPoint = map.project(this._center, zoom)
-    const topLeftOffset = viewHalf
-      .multiplyBy(-scale)
-      .add(currentCenterPoint)
-      .subtract(map._getNewPixelOrigin(center, zoom))
-    if (L.Browser.any3d) {
-      L.DomUtil.setTransform(this._canvas, topLeftOffset, scale)
-    } else {
-      L.DomUtil.setPosition(this._canvas, topLeftOffset.add(position).subtract(position))
-    }
+    const fromCenter = this._center
+    const fromZoom = this._zoom
+    this._update(event.center, event.zoom)
+    if (fromZoom === undefined || fromZoom === this._zoom) return
+
+    // Placed where the target's content belongs in the view being *left*, then
+    // moved to its own place so Leaflet's zoom transition grows it there — the
+    // basemap's outgoing tiles scale over the same 250 ms, and without this the
+    // data would sit a zoom ahead of them for the whole animation.
+    const scale = map.getZoomScale(fromZoom, this._zoom)
+    const start = this._origin
+      .add(this._bounds.min)
+      .multiplyBy(scale)
+      .subtract(map._getNewPixelOrigin(fromCenter, fromZoom))
+      .round()
+    const style = this._canvas.style
+    style.transition = 'none'
+    L.DomUtil.setTransform(this._canvas, start, scale)
+    // Flush, or both transforms land in one style recalculation and the
+    // transition has nothing to animate from.
+    void this._canvas.offsetWidth
+    style.transition = ''
+    L.DomUtil.setTransform(this._canvas, this._bounds.min, 1)
   },
 
   /** Recompute the padded canvas bounds, then reconcile tiles and redraw. */
-  _update() {
-    if (this._map._animatingZoom && this._bounds) return
+  _update(center = this._map.getCenter(), zoom = this._map.getZoom()) {
     const map = this._map
     const padding = this.options.padding
     const size = map.getSize()
-    const min = map.containerPointToLayerPoint(size.multiplyBy(-padding)).round()
+    // Layer points for the view being drawn, which during a zoom animation is
+    // the animation's target rather than the map's current one.
+    this._origin = map._getNewPixelOrigin(center, zoom)
+    const min = map
+      .project(center, zoom)
+      .subtract(size.multiplyBy(0.5 + padding))
+      .subtract(this._origin)
+      .round()
     this._bounds = new L.Bounds(min, min.add(size.multiplyBy(1 + padding * 2)).round())
-    this._center = map.getCenter()
-    this._zoom = map.getZoom()
+    this._center = center
+    this._zoom = zoom
 
     const canvasSize = this._bounds.getSize()
     const dpr = L.Browser.retina ? 2 : 1
-    L.DomUtil.setPosition(this._canvas, this._bounds.min)
+    L.DomUtil.setTransform(this._canvas, this._bounds.min, 1)
     // Assigning width/height blanks the drawing buffer, so only do it when the
     // size really changed; a pan reaches here on every throttled `move` and
     // clearing there is what made the layer flash black.
@@ -338,7 +351,7 @@ export const ZarrGLLayer = L.Layer.extend({
     const tileSize = this.options.tileSize
     // Canvas bounds are layer points at this._zoom; convert to tile zoom pixels.
     const scale = map.getZoomScale(tileZoom, this._zoom)
-    const origin = map.getPixelOrigin()
+    const origin = this._origin
     const min = this._bounds.min.add(origin).multiplyBy(scale)
     const max = this._bounds.max.add(origin).multiplyBy(scale)
     const worldSize = map.options.crs.scale(tileZoom)
@@ -595,7 +608,7 @@ export const ZarrGLLayer = L.Layer.extend({
     gl.bindVertexArray(this._vao)
 
     const worldSize = map.options.crs.scale(this._zoom)
-    const origin = map.getPixelOrigin().add(this._bounds.min)
+    const origin = this._origin.add(this._bounds.min)
     gl.uniform1f(uniforms.u_worldSize, worldSize)
     gl.uniform2f(uniforms.u_offset, origin.x, origin.y)
     gl.uniform2f(uniforms.u_canvasSize, this._canvas.width, this._canvas.height)
@@ -622,16 +635,18 @@ export const ZarrGLLayer = L.Layer.extend({
     for (const tile of this._visible ?? []) {
       const cached = this._tiles.get(this._tileKey(tile)) ?? this._findAncestor(tile)
       if (cached) {
-        // Whatever stands here just arrived, so ramp it up. That covers a coarse
-        // stand-in appearing at a panned edge, not only a tile sharpening over
+        // What this texture replaces, drawn first at full opacity so the area
+        // never dips towards the basemap while the new data ramps up over it.
+        // No such texture means there is nothing to fade over, and ramping up
+        // regardless is what still flashed the layer off on a zoom.
+        const under = cached.tile && this._findAncestor(cached.tile)
+        // Whatever stands here just arrived ramps up, so a coarse stand-in
+        // appearing at a frontier fades too, not only a tile sharpening over
         // its parent.
-        const alpha = fade > 0 ? Math.min(1, (now - cached.createdAt) / fade) : 1
+        const alpha = fade > 0 && under ? Math.min(1, (now - cached.createdAt) / fade) : 1
         if (alpha < 1) {
           fading = true
-          // What this texture replaces, at full opacity, so the area never dips
-          // towards the basemap while the new data ramps up over it.
-          const under = cached.tile && this._findAncestor(cached.tile)
-          if (under) this._drawTile(tile, under, 1)
+          this._drawTile(tile, under, 1)
         }
         this._drawTile(tile, cached, alpha)
       }
