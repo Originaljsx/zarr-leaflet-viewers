@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>MUR SST 1 km Zarr Viewer (Leaflet, custom WebGL layer)</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.75); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 240px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel input, #panel select { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row label { flex: 1; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 2em; }
+  #meta { margin-top: 6px; color: #aaa; min-height: 1em; }
+  #warn { margin-top: 4px; color: #fc6; min-height: 1em; }
+  #slicelabel { color: #ccc; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>MUR SST 1 km (Leaflet + WebGL)</b>
+  <div id="meta">loading store…</div>
+  <div id="warn"></div>
+  <label>variable
+    <select id="varsel"></select>
+  </label>
+  <label>colormap
+    <select id="cmap"></select>
+  </label>
+  <div class="row">
+    <label>min (K) <input id="cmin" type="number" step="0.05" /></label>
+    <label>max (K) <input id="cmax" type="number" step="0.05" /></label>
+  </div>
+  <label>opacity <span id="opval">100%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
+  </label>
+  <label>day <span id="slicelabel"></span>
+    <input id="slice" type="range" min="0" max="61" step="1" value="0" />
+  </label>
+  <div id="readout">click map for value</div>
+</div>
+<script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4","zarrita":"https://esm.sh/zarrita@0.7.3"}}</script>
+<script type="module">
+import L from 'leaflet'
+import * as zarr from 'zarrita'
+// Colormaps only -- the layer itself has no zarr-maps dependency.
+import { colormapBuilder } from './zarr-maps/index.js'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+
+const el = (id) => document.getElementById(id)
+
+const VARS = {
+  analysed_sst: {
+    clim: [271.15, 305.15], cmap: 'jet', units: 'K', label: 'SST', kind: 'absolute',
+  },
+  sst_anomaly: {
+    clim: [-3, 3], cmap: 'RdBu_r', units: 'K', label: 'SST anomaly', kind: 'delta',
+  },
+}
+const COLORMAP_NAMES = [
+  'jet', 'turbo', 'plasma', 'viridis', 'magma', 'inferno', 'cividis',
+  'RdBu', 'RdBu_r', 'coolwarm', 'seismic', 'Spectral', 'RdYlBu',
+  'Greys', 'Greys_r', 'YlOrRd', 'YlGnBu',
+]
+
+const DEFAULT_STORE = 'https://d1ef9node0gwi2.cloudfront.net/mur1km_nov-dec-2025_int16_pyramid.zarr'
+const resolveSource = (store) => /^https?:\/\//.test(store) ? store : new URL(store, location.href).href
+
+const params = new URLSearchParams(location.search)
+const source = resolveSource(params.get('store') ?? DEFAULT_STORE)
+let cur = params.get('var') in VARS ? params.get('var') : 'analysed_sst'
+
+const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
+const varSel = el('varsel'), cmapSel = el('cmap'), cminInput = el('cmin'), cmaxInput = el('cmax')
+const opacitySlider = el('opacity'), opVal = el('opval')
+const sliceSlider = el('slice'), sliceLabel = el('slicelabel')
+
+for (const v of Object.keys(VARS)) varSel.add(new Option(`${VARS[v].label} (${v})`, v))
+for (const name of COLORMAP_NAMES) cmapSel.add(new Option(name, name))
+varSel.value = cur
+
+const map = L.map('map', { center: [20, -45], zoom: 2 })
+L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+}).addTo(map)
+
+// ---------- zarrita side-channel: click -> value lookup ----------
+const sideChannels = new Map()
+const encCache = new Map()
+
+async function ensureSideChannel(src) {
+  if (!sideChannels.has(src)) sideChannels.set(src, { arrays: new Map(), grid: null, ready: null })
+  const sc = sideChannels.get(src)
+  if (!sc.ready) {
+    sc.ready = (async () => {
+      const store = await zarr.extendStore(
+        new zarr.FetchStore(src),
+        (s) => zarr.withMaybeConsolidatedMetadata(s, { format: 'v3' }).catch(() => s),
+      )
+      sc.root = zarr.root(store)
+    })()
+  }
+  await sc.ready
+  return sc
+}
+
+async function getArray(sc, name) {
+  if (!sc.arrays.has(name)) {
+    sc.arrays.set(name, zarr.open(sc.root.resolve(`0/${name}`), { kind: 'array' }))
+  }
+  return await sc.arrays.get(name)
+}
+
+async function getGrid(sc) {
+  if (!sc.grid) {
+    sc.grid = (async () => {
+      const [laArr, loArr] = await Promise.all([getArray(sc, 'latitude'), getArray(sc, 'longitude')])
+      const [la, lo] = await Promise.all([
+        zarr.get(laArr, [zarr.slice(0, 2)]),
+        zarr.get(loArr, [zarr.slice(0, 2)]),
+      ])
+      return {
+        lat0: la.data[0], dlat: la.data[1] - la.data[0],
+        lon0: lo.data[0], dlon: lo.data[1] - lo.data[0],
+        ny: laArr.shape[0], nx: loArr.shape[0],
+      }
+    })()
+  }
+  return await sc.grid
+}
+
+async function getEncoding(src, variable) {
+  if (!encCache.has(variable)) {
+    encCache.set(variable, (async () => {
+      const r = await fetch(`${src}/0/${variable}/zarr.json`)
+      const m = await r.json()
+      const at = m.attributes ?? {}
+      return {
+        scale: at.scale_factor ?? 1,
+        offset: at.add_offset ?? 0,
+        fill: m.fill_value,
+        packed: at.scale_factor !== undefined,
+      }
+    })())
+  }
+  return await encCache.get(variable)
+}
+
+async function readPointValue(src, variable, sliceIdx, lat, lon) {
+  const sc = await ensureSideChannel(src)
+  const [arr, g, enc] = await Promise.all([getArray(sc, variable), getGrid(sc), getEncoding(src, variable)])
+  const lonN = ((lon + 180) % 360 + 360) % 360 - 180
+  const y = Math.min(g.ny - 1, Math.max(0, Math.round((lat - g.lat0) / g.dlat)))
+  const x = Math.min(g.nx - 1, Math.max(0, Math.round((lonN - g.lon0) / g.dlon)))
+  const raw = await zarr.get(arr, [sliceIdx, y, x])
+  const rawN = Number(raw)
+  if (!enc.packed) return rawN
+  if (enc.fill != null && rawN === enc.fill) return NaN
+  return rawN * enc.scale + enc.offset
+}
+
+// ---------- day slider ----------
+let slices = []
+let curSliceIdx = 0
+
+function updateSliceLabel() {
+  sliceLabel.textContent = slices[curSliceIdx]?.date ?? `index ${curSliceIdx}`
+}
+
+async function buildFallbackSlider() {
+  try {
+    const sc = await ensureSideChannel(source)
+    const arr = await getArray(sc, cur)
+    const n = arr.shape[0]
+    sliceSlider.min = 0; sliceSlider.max = Math.max(0, n - 1); sliceSlider.step = 1; sliceSlider.value = 0
+  } catch (err) {
+    console.error('fallback slider shape lookup failed', err)
+    sliceSlider.min = 0; sliceSlider.max = 0; sliceSlider.step = 1; sliceSlider.value = 0
+  }
+  curSliceIdx = 0
+  updateSliceLabel()
+}
+
+function buildSliderFromSlices() {
+  sliceSlider.min = 0
+  sliceSlider.max = Math.max(0, slices.length - 1)
+  sliceSlider.step = 1
+  sliceSlider.value = 0
+  curSliceIdx = 0
+  updateSliceLabel()
+}
+
+// ---------- layer lifecycle ----------
+let layer = null
+let curOpacity = 1
+let layerOpId = 0
+
+const rampFor = (name) => colormapBuilder(name)
+
+function destroyLayer() {
+  if (layer) { map.removeLayer(layer); layer = null }
+}
+
+async function createLayer() {
+  const opId = ++layerOpId
+  destroyLayer()
+  await new Promise((r) => requestAnimationFrame(r))
+  if (opId !== layerOpId) return
+
+  const newLayer = new ZarrGLLayer({
+    url: source,
+    variable: cur,
+    maxZoom: 12,
+    clim: [parseFloat(cminInput.value), parseFloat(cmaxInput.value)],
+    colors: rampFor(cmapSel.value),
+    opacity: curOpacity,
+    selectors: { time: curSliceIdx },
+  })
+  layer = newLayer
+  newLayer.addTo(map)
+  try {
+    await newLayer.readyPromise
+    if (opId !== layerOpId) { try { map.removeLayer(newLayer) } catch {} ; return }
+    updateMeta()
+  } catch (err) {
+    if (opId !== layerOpId) return
+    warnEl.textContent = 'layer load error (see console)'
+    console.error(err)
+  }
+}
+
+function updateMeta() {
+  const levels = layer?.source?.levels ?? []
+  const detail = levels.length ? ` — ${levels.length} levels` : ''
+  metaEl.textContent = `MUR SST 1 km — ${VARS[cur].label} (${cur})${detail}`
+}
+
+function setVarDefaults() {
+  const cfg = VARS[cur]
+  cmapSel.value = cfg.cmap
+  cminInput.value = cfg.clim[0]
+  cmaxInput.value = cfg.clim[1]
+}
+
+async function loadStoreAndLayer() {
+  destroyLayer()
+  metaEl.textContent = 'loading store…'
+  warnEl.textContent = ''
+  slices = []
+  curSliceIdx = 0
+  try {
+    const r = await fetch(`${source}/slices.json`)
+    if (!r.ok) throw new Error(`slices.json ${r.status}`)
+    slices = await r.json()
+    buildSliderFromSlices()
+  } catch (err) {
+    console.error('slices.json missing/failed', err)
+    warnEl.textContent = 'slices.json missing — falling back to index-only slider'
+    await buildFallbackSlider()
+  }
+  createLayer()
+  updateMeta()
+}
+
+// ---------- control wiring ----------
+varSel.onchange = () => {
+  cur = varSel.value
+  setVarDefaults()
+  createLayer()
+  updateMeta()
+}
+
+cmapSel.onchange = () => {
+  if (layer) layer.updateStyle({ colors: rampFor(cmapSel.value) })
+}
+
+function applyClim() {
+  const lo = parseFloat(cminInput.value)
+  const hi = parseFloat(cmaxInput.value)
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) {
+    warnEl.textContent = 'invalid clim range (min must be < max)'
+    return
+  }
+  if (warnEl.textContent.startsWith('invalid clim')) warnEl.textContent = ''
+  if (layer) layer.updateStyle({ clim: [lo, hi] })
+}
+cminInput.onchange = applyClim
+cmaxInput.onchange = applyClim
+
+opacitySlider.oninput = () => {
+  curOpacity = parseFloat(opacitySlider.value)
+  opVal.textContent = `${Math.round(curOpacity * 100)}%`
+  if (layer) layer.updateStyle({ opacity: curOpacity })
+}
+
+let sliceTimer
+sliceSlider.oninput = () => {
+  curSliceIdx = +sliceSlider.value
+  updateSliceLabel()
+  clearTimeout(sliceTimer)
+  sliceTimer = setTimeout(() => {
+    if (layer) layer.updateSelectors({ time: curSliceIdx })
+  }, 80)
+}
+
+const kToC = (k, kind) => kind === 'delta' ? k : k - 273.15
+
+map.on('click', async (e) => {
+  const { lat, lng } = e.latlng
+  const where = `${lat.toFixed(3)}, ${lng.toFixed(3)}`
+  readoutEl.textContent = `${where}: reading…`
+  try {
+    const v = await readPointValue(source, cur, curSliceIdx, lat, lng)
+    if (v == null || Number.isNaN(v)) {
+      readoutEl.textContent = `${where}: no data`
+    } else {
+      const cfg = VARS[cur]
+      const c = kToC(v, cfg.kind)
+      const day = slices[curSliceIdx]?.date ?? `index ${curSliceIdx}`
+      const cStr = cfg.kind === 'delta' ? `${c >= 0 ? '+' : ''}${c.toFixed(2)}` : c.toFixed(2)
+      readoutEl.textContent = `${where}: ${v.toFixed(3)} K (${cStr} °C) — ${cfg.label} (${day})`
+    }
+  } catch (err) {
+    console.error(err)
+    readoutEl.textContent = `${where}: lookup failed (see console)`
+  }
+})
+
+// ---------- boot ----------
+setVarDefaults()
+loadStoreAndLayer()
+
+window.__mur = {
+  readPointValue,
+  get layer() { return layer },
+  get source() { return source },
+  get cur() { return cur },
+  get curSliceIdx() { return curSliceIdx },
+}
+window.__leafletMap = map
+</script>
+</body>
+</html>
