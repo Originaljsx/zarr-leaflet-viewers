@@ -153,7 +153,9 @@ export class ZarrSource {
   async _open() {
     // Cached and deduplicated: tiles are far smaller than chunks, so a single
     // viewport resolves many tiles to the same byte ranges.
-    this.store = new CachingStore(new zarr.FetchStore(this.url), { maxBytes: this.cacheBytes })
+    this.store = new CachingStore(
+      new zarr.FetchStore(this.url, { overrides: { cache: 'no-store' } }),
+      { maxBytes: this.cacheBytes })
     this.root = zarr.root(this.store)
     const group = await zarr.open(this.root, { kind: 'group' })
     const attrs = group.attrs ?? {}

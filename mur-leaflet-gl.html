@@ -104,7 +104,7 @@ async function ensureSideChannel(src) {
   if (!sc.ready) {
     sc.ready = (async () => {
       const store = await zarr.extendStore(
-        new zarr.FetchStore(src),
+        new zarr.FetchStore(src, { overrides: { cache: 'no-store' } }),
         (s) => zarr.withMaybeConsolidatedMetadata(s, { format: 'v3' }).catch(() => s),
       )
       sc.root = zarr.root(store)
