@@ -26,12 +26,21 @@ void main() {
 }
 `
 
-export const fragmentShaderSource = `#version 300 es
+const SAMPLERS = { float: 'sampler2D', int: 'highp isampler2D', uint: 'highp usampler2D' }
+
+/**
+ * `sampler` follows the store's dtype, so integer data can be uploaded as
+ * `R16I`/`R16UI` and friends instead of being widened to `R32F` on the CPU.
+ * Integer textures cannot be filtered, which costs nothing here: sampling is
+ * `NEAREST` either way, since interpolating packed values across a no-data
+ * boundary would invent data.
+ */
+export const fragmentShaderSource = ({ sampler = 'float' } = {}) => `#version 300 es
 precision highp float;
 
 in vec2 v_norm;
 
-uniform sampler2D u_data;
+uniform ${SAMPLERS[sampler]} u_data;
 uniform sampler2D u_ramp;
 
 // Projection: lon is affine in normalized x; lat is either affine in
@@ -81,7 +90,7 @@ void main() {
     : (u_latBounds.y - lat) / latSpan;
   if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) discard;
 
-  float raw = texture(u_data, vec2(u, v)).r;
+  float raw = float(texture(u_data, vec2(u, v)).r);
   bool isNaN = raw != raw;
   bool outOfRange = raw < u_validRange.x || raw > u_validRange.y;
   bool isFill = u_useFill == 1 && abs(raw - u_fill) < 0.5;

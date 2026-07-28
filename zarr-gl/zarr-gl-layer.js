@@ -75,6 +75,14 @@ export const ZarrGLLayer = L.Layer.extend({
     cacheBytes: 256 * 1024 * 1024,
     /** Textures kept for parent-tile fallback before the oldest are dropped. */
     tileCacheSize: 256,
+    /** Milliseconds a newly loaded tile takes to fade in; 0 disables. */
+    fadeDuration: 200,
+    /** Load the parent zoom's tiles too, so zooming out has data to show. */
+    prefetchParents: true,
+    /** Only reconcile tiles once the map stops moving, as `L.GridLayer` can. */
+    updateWhenIdle: false,
+    /** Minimum gap between reconciliations while the map is moving. */
+    updateInterval: 200,
     pane: 'overlayPane',
   },
 
@@ -86,6 +94,7 @@ export const ZarrGLLayer = L.Layer.extend({
     this._queue = []
     this._active = 0
     this._version = 0
+    this._onMove = L.Util.throttle(this._update, this.options.updateInterval, this)
     this.source = new ZarrSource({
       url: this.options.url,
       variable: this.options.variable,
@@ -95,7 +104,10 @@ export const ZarrGLLayer = L.Layer.extend({
     this.readyPromise = this.source.readyPromise.then(
       () => {
         this._ready = true
-        if (this._map) this._update()
+        if (this._map) {
+          this._initProgram()
+          this._update()
+        }
         return this.source
       },
       (error) => {
@@ -107,9 +119,31 @@ export const ZarrGLLayer = L.Layer.extend({
 
   onAdd() {
     this._initCanvas()
+    if (this._ready) this._initProgram()
     this.getPane().appendChild(this._canvas)
     this._reset()
     return this
+  },
+
+  /**
+   * The program, built once metadata has arrived: its sampler type has to match
+   * the dtype the store hands back, which is unknown when the canvas is created.
+   */
+  _initProgram() {
+    if (this._program || !this._gl) return
+    const gl = this._gl
+    const sampler = this.source.texture?.sampler ?? 'float'
+    this._program = createProgram(gl, vertexShaderSource, fragmentShaderSource({ sampler }))
+    this._uniforms = {}
+    for (const name of UNIFORM_NAMES) {
+      this._uniforms[name] = gl.getUniformLocation(this._program, name)
+    }
+    this._attrib = gl.getAttribLocation(this._program, 'a_norm')
+    gl.bindVertexArray(this._vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer)
+    gl.enableVertexAttribArray(this._attrib)
+    gl.vertexAttribPointer(this._attrib, 2, gl.FLOAT, false, 0, 0)
+    gl.bindVertexArray(null)
   },
 
   onRemove() {
@@ -127,6 +161,9 @@ export const ZarrGLLayer = L.Layer.extend({
       zoomend: this._update,
       zoom: this._onZoom,
     }
+    // Without this the canvas merely translates with the pane during a drag and
+    // the newly exposed edge stays empty until the drag ends.
+    if (!this.options.updateWhenIdle) events.move = this._onMove
     if (this._zoomAnimated) events.zoomanim = this._onAnimZoom
     return events
   },
@@ -184,22 +221,18 @@ export const ZarrGLLayer = L.Layer.extend({
     })
     if (!gl) throw new Error('WebGL2 is required by the Zarr GL layer')
     this._gl = gl
-    this._program = createProgram(gl, vertexShaderSource, fragmentShaderSource)
-    this._uniforms = {}
-    for (const name of UNIFORM_NAMES) {
-      this._uniforms[name] = gl.getUniformLocation(this._program, name)
-    }
-    this._attrib = gl.getAttribLocation(this._program, 'a_norm')
     this._vao = gl.createVertexArray()
     this._buffer = gl.createBuffer()
     gl.bindVertexArray(this._vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer)
     gl.bufferData(gl.ARRAY_BUFFER, 8 * 4, gl.DYNAMIC_DRAW)
-    gl.enableVertexAttribArray(this._attrib)
-    gl.vertexAttribPointer(this._attrib, 2, gl.FLOAT, false, 0, 0)
     gl.bindVertexArray(null)
     gl.enable(gl.BLEND)
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    // Rows are tightly packed. The default alignment of 4 would have the driver
+    // expect padding after each row, so a 2-byte-per-texel window of odd width
+    // looks too small to upload and the texture is left incomplete.
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
     if (this.options.colors) this._rampTexture = createRampTexture(gl, this.options.colors)
   },
 
@@ -210,7 +243,8 @@ export const ZarrGLLayer = L.Layer.extend({
     if (this._rampTexture) gl.deleteTexture(this._rampTexture)
     gl.deleteBuffer(this._buffer)
     gl.deleteVertexArray(this._vao)
-    gl.deleteProgram(this._program)
+    if (this._program) gl.deleteProgram(this._program)
+    this._program = null
     this._gl = null
   },
 
@@ -273,14 +307,22 @@ export const ZarrGLLayer = L.Layer.extend({
     const canvasSize = this._bounds.getSize()
     const dpr = L.Browser.retina ? 2 : 1
     L.DomUtil.setPosition(this._canvas, this._bounds.min)
-    this._canvas.width = canvasSize.x * dpr
-    this._canvas.height = canvasSize.y * dpr
-    this._canvas.style.width = `${canvasSize.x}px`
-    this._canvas.style.height = `${canvasSize.y}px`
+    // Assigning width/height blanks the drawing buffer, so only do it when the
+    // size really changed; a pan reaches here on every throttled `move` and
+    // clearing there is what made the layer flash black.
+    const width = canvasSize.x * dpr
+    const height = canvasSize.y * dpr
+    if (this._canvas.width !== width || this._canvas.height !== height) {
+      this._canvas.width = width
+      this._canvas.height = height
+      this._canvas.style.width = `${canvasSize.x}px`
+      this._canvas.style.height = `${canvasSize.y}px`
+    }
 
     if (!this._ready) return
     this._reconcileTiles()
-    this._requestDraw()
+    // Synchronously, so a resize never leaves a blank frame on screen.
+    this._draw()
   },
 
   /* --------------------------------- tiles -------------------------------- */
@@ -340,6 +382,17 @@ export const ZarrGLLayer = L.Layer.extend({
     return `${tile.z}/${tile.x}/${tile.y}`
   },
 
+  /** Distinct parents of `tiles`, one zoom coarser. */
+  _parentTiles(tiles) {
+    const parents = new Map()
+    for (const { z, x, y } of tiles) {
+      if (z === 0) continue
+      const parent = { z: z - 1, x: Math.floor(x / 2), y: Math.floor(y / 2) }
+      parents.set(this._tileKey(parent), parent)
+    }
+    return [...parents.values()]
+  },
+
   _reconcileTiles() {
     const wanted = this._visibleTiles()
     const tileZoom = this._getTileZoom()
@@ -349,6 +402,21 @@ export const ZarrGLLayer = L.Layer.extend({
       keep.add(key)
       if (!this._tiles.has(key) && !this._pending.has(key)) this._enqueue(tile)
     }
+    // Parents are what stands in for a tile that has not arrived, so fetching
+    // them makes zooming out instant and gives the fade something to sit on.
+    if (this.options.prefetchParents) {
+      for (const tile of this._parentTiles(wanted)) {
+        const key = this._tileKey(tile)
+        keep.add(key)
+        if (!this._tiles.has(key) && !this._pending.has(key)) this._enqueue(tile, 1)
+      }
+    }
+    // Tiles that left the view before their turn came are no longer worth
+    // reading; their bytes stay in the store cache if they were in flight.
+    for (const job of this._queue) {
+      if (!keep.has(job.key)) this._pending.delete(job.key)
+    }
+    this._queue = this._queue.filter((job) => keep.has(job.key))
     // Ancestors are kept so they can stand in for tiles that are still loading;
     // anything else off screen goes, oldest first once over the cache size.
     for (const key of [...this._tiles.keys()]) {
@@ -367,16 +435,33 @@ export const ZarrGLLayer = L.Layer.extend({
     this._tiles.delete(key)
   },
 
-  _enqueue(tile) {
+  _enqueue(tile, priority = 0) {
     const key = this._tileKey(tile)
     this._pending.add(key)
-    this._queue.push({ tile, key, version: this._version })
+    this._queue.push({ tile, key, priority, version: this._version })
     this._pump()
+  },
+
+  /** Visible tiles before prefetched parents, and centre outwards within each. */
+  _nextJob() {
+    const centre = this._map.project(this._map.getCenter(), this._getTileZoom())
+    const size = this.options.tileSize
+    const cost = ({ tile, priority }) => {
+      const scale = 2 ** (this._getTileZoom() - tile.z)
+      const dx = (tile.x + 0.5) * size * scale - centre.x
+      const dy = (tile.y + 0.5) * size * scale - centre.y
+      return priority * 1e9 + Math.hypot(dx, dy)
+    }
+    let best = 0
+    for (let i = 1; i < this._queue.length; i++) {
+      if (cost(this._queue[i]) < cost(this._queue[best])) best = i
+    }
+    return this._queue.splice(best, 1)[0]
   },
 
   _pump() {
     while (this._active < this.options.concurrency && this._queue.length) {
-      const job = this._queue.shift()
+      const job = this._nextJob()
       this._active += 1
       this._loadTile(job).finally(() => {
         this._active -= 1
@@ -421,17 +506,18 @@ export const ZarrGLLayer = L.Layer.extend({
 
   _createTexture(window) {
     const gl = this._gl
+    const spec = this.source.texture
     const texture = gl.createTexture()
     gl.bindTexture(gl.TEXTURE_2D, texture)
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
-      gl.R32F,
+      gl[spec.internalFormat],
       window.width,
       window.height,
       0,
-      gl.RED,
-      gl.FLOAT,
+      gl[spec.format],
+      gl[spec.type],
       window.data
     )
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
@@ -440,6 +526,7 @@ export const ZarrGLLayer = L.Layer.extend({
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     return {
       texture,
+      createdAt: performance.now(),
       lonWest: window.lonWest,
       lonEast: window.lonEast,
       latSouth: window.latSouth,
@@ -480,7 +567,7 @@ export const ZarrGLLayer = L.Layer.extend({
 
   _draw() {
     const gl = this._gl
-    if (!gl || !this._bounds || !this._ready || !this._rampTexture) return
+    if (!gl || !this._program || !this._bounds || !this._ready || !this._rampTexture) return
     const map = this._map
     const info = this._getProjection()
     const uniforms = this._uniforms
@@ -507,34 +594,52 @@ export const ZarrGLLayer = L.Layer.extend({
     gl.uniform1f(uniforms.u_fill, source.fillValue ?? 0)
     gl.uniform1f(uniforms.u_scaleFactor, source.scaleFactor)
     gl.uniform1f(uniforms.u_addOffset, source.addOffset)
-    gl.uniform1f(uniforms.u_opacity, this.options.opacity)
 
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_2D, this._rampTexture)
     gl.uniform1i(uniforms.u_ramp, 1)
     gl.uniform1i(uniforms.u_data, 0)
 
+    const now = performance.now()
+    const fade = this.options.fadeDuration
+    let fading = false
+
     for (const tile of this._visible ?? []) {
-      const cached = this._tiles.get(this._tileKey(tile)) ?? this._findAncestor(tile)
+      const own = this._tiles.get(this._tileKey(tile))
+      const cached = own ?? this._findAncestor(tile)
       if (!cached) continue
-      const { nx0, nx1, ny0, ny1 } = this._tileGeometry(tile)
-
-      gl.uniform2f(uniforms.u_lonBounds, cached.lonWest, cached.lonEast)
-      gl.uniform2f(uniforms.u_latBounds, cached.latSouth, cached.latNorth)
-      gl.uniform1i(uniforms.u_latAscending, cached.latAscending ? 1 : 0)
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, cached.texture)
-
-      // Two triangles over the tile, in normalized CRS units.
-      gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer)
-      gl.bufferSubData(
-        gl.ARRAY_BUFFER,
-        0,
-        new Float32Array([nx0, ny1, nx1, ny1, nx0, ny0, nx1, ny0])
-      )
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      const alpha = own && fade > 0 ? Math.min(1, (now - own.createdAt) / fade) : 1
+      if (alpha < 1) {
+        fading = true
+        // The coarser tile this one replaces, drawn underneath at full opacity,
+        // so the fade crosses between two textures instead of dissolving to the
+        // basemap and back.
+        const under = this._findAncestor(tile)
+        if (under) this._drawTile(tile, under, 1)
+      }
+      this._drawTile(tile, cached, alpha)
     }
     gl.bindVertexArray(null)
+    if (fading) this._requestDraw()
+  },
+
+  /** One tile quad, sampling `cached`'s window, in normalized CRS units. */
+  _drawTile(tile, cached, alpha) {
+    const gl = this._gl
+    const uniforms = this._uniforms
+    const { nx0, nx1, ny0, ny1 } = this._tileGeometry(tile)
+
+    gl.uniform2f(uniforms.u_lonBounds, cached.lonWest, cached.lonEast)
+    gl.uniform2f(uniforms.u_latBounds, cached.latSouth, cached.latNorth)
+    gl.uniform1i(uniforms.u_latAscending, cached.latAscending ? 1 : 0)
+    gl.uniform1f(uniforms.u_opacity, this.options.opacity * alpha)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, cached.texture)
+
+    // Two triangles over the tile.
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._buffer)
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([nx0, ny1, nx1, ny1, nx0, ny0, nx1, ny0]))
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   },
 
   _getProjection() {

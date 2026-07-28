@@ -25,6 +25,34 @@ const LAT_NAMES = ['lat', 'latitude', 'y', 'Latitude', 'Y']
 /** Largest texture the layer will upload for one window, per axis. */
 export const MAX_TEXELS = 4096
 
+/**
+ * How each dtype travels to the GPU. Integer data keeps its stored width, which
+ * halves both the upload and the texture for the common packed-int16 case and
+ * skips a full CPU copy into `Float32Array`; the shader decodes with
+ * `scale_factor`/`add_offset` regardless.
+ */
+const TEXTURE_SPECS = {
+  int8: { internalFormat: 'R8I', format: 'RED_INTEGER', type: 'BYTE', sampler: 'int', ArrayType: Int8Array },
+  int16: { internalFormat: 'R16I', format: 'RED_INTEGER', type: 'SHORT', sampler: 'int', ArrayType: Int16Array },
+  int32: { internalFormat: 'R32I', format: 'RED_INTEGER', type: 'INT', sampler: 'int', ArrayType: Int32Array },
+  uint8: { internalFormat: 'R8UI', format: 'RED_INTEGER', type: 'UNSIGNED_BYTE', sampler: 'uint', ArrayType: Uint8Array },
+  uint16: { internalFormat: 'R16UI', format: 'RED_INTEGER', type: 'UNSIGNED_SHORT', sampler: 'uint', ArrayType: Uint16Array },
+  uint32: { internalFormat: 'R32UI', format: 'RED_INTEGER', type: 'UNSIGNED_INT', sampler: 'uint', ArrayType: Uint32Array },
+}
+
+const FLOAT_SPEC = {
+  internalFormat: 'R32F',
+  format: 'RED',
+  type: 'FLOAT',
+  sampler: 'float',
+  ArrayType: Float32Array,
+}
+
+/** Anything not listed -- float32, float64, int64 -- is widened to `R32F`. */
+function textureSpec(dtype) {
+  return TEXTURE_SPECS[dtype] ?? FLOAT_SPEC
+}
+
 function pickName(names, candidates) {
   for (const candidate of candidates) {
     const hit = names.find((n) => n === candidate)
@@ -172,6 +200,7 @@ export class ZarrSource {
     // Finest level first.
     this.levels.sort((a, b) => b.lon.size - a.lon.size)
     this.finest = this.levels[0]
+    this.texture = textureSpec(this.finest.array.dtype)
     this._readPacking(this.finest.array, attrs)
     await this._loadExtraDimensions()
     return this
@@ -268,7 +297,7 @@ export class ZarrSource {
 
     const height = endRow - startRow
     const width = ranges.reduce((sum, [a, b]) => sum + (b - a), 0)
-    const data = new Float32Array(width * height)
+    const data = new this.texture.ArrayType(width * height)
     const lonFirst = level.lonIndex < level.latIndex
 
     let xOffset = 0

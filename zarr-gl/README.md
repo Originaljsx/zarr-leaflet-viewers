@@ -19,6 +19,9 @@ const layer = new ZarrGLLayer({
   tileSize: 512,               // see "Tile size vs chunk size"
   concurrency: 16,
   cacheBytes: 256 * 1024 * 1024,
+  fadeDuration: 200,           // 0 to have tiles appear at once
+  prefetchParents: true,
+  updateWhenIdle: false,       // true to only load once the map stops
 }).addTo(map)
 
 await layer.readyPromise
@@ -38,7 +41,7 @@ unit of compositing.
 
 The canvas is managed the way `L.Renderer` manages its own: sized to a padded
 viewport, positioned in layer coordinates so panning moves it with the map pane,
-CSS-transformed during zoom animation, and redrawn at `zoomend`/`moveend`.
+CSS-transformed during zoom animation, and redrawn as the map moves.
 
 ## How the projection works
 
@@ -89,6 +92,26 @@ Profiling the same view put drawing at 0.1 ms per frame with no long tasks and n
 dropped frames, and decode plus stitch at 6.8 ms per tile — so the cost of this
 layer is essentially the cost of getting bytes, and these two knobs are what move
 it. Neither the GL path nor the decode path is worth optimising until they are.
+
+Data reaches the GPU in its stored dtype: `int16` is uploaded as `R16I` and read
+through an `isampler2D`, halving both the upload and the texture against a
+CPU-side widening to `R32F`. Note that this needs `UNPACK_ALIGNMENT` of 1 — with
+the default of 4 the driver expects padding after each row, and a 2-byte-per-texel
+window of odd width appears too small to upload, leaving the texture incomplete.
+
+## What happens while the map moves
+
+Tiles load during a pan rather than only at `moveend` (`updateWhenIdle: false`,
+throttled by `updateInterval`), the parent zoom is fetched alongside the visible
+tiles so zooming out has data to show immediately, and the queue is served
+visible-tiles-first, centre outwards, dropping tiles that leave the view before
+their turn.
+
+A new tile fades in over `fadeDuration`, drawn over the coarser tile it replaces
+so the transition crosses between two textures rather than dissolving to the
+basemap and back. The canvas is only re-sized when its dimensions actually change,
+since assigning `width`/`height` blanks the drawing buffer — doing that on every
+pan is what made the layer flash black.
 
 ## Files
 
