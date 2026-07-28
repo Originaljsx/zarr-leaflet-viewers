@@ -611,7 +611,12 @@ export const ZarrGLLayer = L.Layer.extend({
     const origin = this._origin.add(this._bounds.min)
     gl.uniform1f(uniforms.u_worldSize, worldSize)
     gl.uniform2f(uniforms.u_offset, origin.x, origin.y)
-    gl.uniform2f(uniforms.u_canvasSize, this._canvas.width, this._canvas.height)
+    // CSS pixels, not the device-pixel backing store: u_worldSize and u_offset
+    // are Leaflet layer points (CSS px), so the shader's px->clip divisor must
+    // match. Using canvas.width here squashed the data into the top-left
+    // 1/dpr of the map on retina/HiDPI displays.
+    const cssSize = this._bounds.getSize()
+    gl.uniform2f(uniforms.u_canvasSize, cssSize.x, cssSize.y)
     gl.uniform1i(uniforms.u_projection, info.mode)
     gl.uniform2f(uniforms.u_lonCoeff, info.lonA, info.lonB)
     gl.uniform2f(uniforms.u_latCoeff, info.latA ?? 0, info.latB ?? 0)
