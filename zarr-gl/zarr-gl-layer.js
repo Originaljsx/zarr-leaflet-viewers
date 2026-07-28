@@ -77,13 +77,6 @@ export const ZarrGLLayer = L.Layer.extend({
     tileCacheSize: 256,
     /** Milliseconds a newly loaded tile takes to fade in; 0 disables. */
     fadeDuration: 200,
-    /**
-     * Hold the coarser tile a fading tile replaces at full opacity underneath
-     * it. Nothing dips towards the basemap, but since the two differ only in
-     * resolution the transition is close to invisible; off, a tile visibly
-     * fades in and the area it covers is briefly translucent.
-     */
-    crossfade: false,
     /** Load the parent zoom's tiles too, so zooming out has data to show. */
     prefetchParents: true,
     /** Only reconcile tiles once the map stops moving, as `L.GridLayer` can. */
@@ -501,7 +494,7 @@ export const ZarrGLLayer = L.Layer.extend({
         signal: controller.signal,
       })
       if (version !== this._version || !this._gl) return
-      if (window) this._tiles.set(key, this._createTexture(window))
+      if (window) this._tiles.set(key, { ...this._createTexture(window), tile })
       this._requestDraw()
     } catch (error) {
       if (error?.name !== 'AbortError') console.error('[zarr-gl] tile read failed', key, error)
@@ -612,16 +605,18 @@ export const ZarrGLLayer = L.Layer.extend({
     let fading = false
 
     for (const tile of this._visible ?? []) {
-      const own = this._tiles.get(this._tileKey(tile))
-      const cached = own ?? this._findAncestor(tile)
+      const cached = this._tiles.get(this._tileKey(tile)) ?? this._findAncestor(tile)
       if (!cached) continue
-      const alpha = own && fade > 0 ? Math.min(1, (now - own.createdAt) / fade) : 1
+      // Whatever stands here just arrived, so ramp it up. That covers a coarse
+      // stand-in appearing at a panned edge, not only a tile sharpening over
+      // its parent.
+      const alpha = fade > 0 ? Math.min(1, (now - cached.createdAt) / fade) : 1
       if (alpha < 1) {
         fading = true
-        if (this.options.crossfade) {
-          const under = this._findAncestor(tile)
-          if (under) this._drawTile(tile, under, 1)
-        }
+        // What this texture replaces, at full opacity, so the area never dips
+        // towards the basemap while the new data ramps up over it.
+        const under = cached.tile && this._findAncestor(cached.tile)
+        if (under) this._drawTile(tile, under, 1)
       }
       this._drawTile(tile, cached, alpha)
     }

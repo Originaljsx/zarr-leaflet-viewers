@@ -20,7 +20,6 @@ const layer = new ZarrGLLayer({
   concurrency: 16,
   cacheBytes: 256 * 1024 * 1024,
   fadeDuration: 200,           // 0 to have tiles appear at once
-  crossfade: false,            // true to hold coarser data under a fading tile
   prefetchParents: true,
   updateWhenIdle: false,       // true to only load once the map stops
 }).addTo(map)
@@ -108,10 +107,13 @@ tiles so zooming out has data to show immediately, and the queue is served
 visible-tiles-first, centre outwards, dropping tiles that leave the view before
 their turn.
 
-A new tile fades in over `fadeDuration`, which means the area it covers is briefly
-translucent. `crossfade: true` instead holds the coarser tile it replaces at full
-opacity underneath, so nothing dips towards the basemap — but the two differ only
-in resolution, which makes that transition close to invisible.
+Whatever texture stands in a tile's place ramps up over `fadeDuration` if it just
+arrived — the tile itself, or a coarser stand-in appearing where nothing had been
+read yet — with the texture it replaces held underneath at full opacity. So the
+visible transition is where resolution actually changes, typically a panned edge
+going blurry to sharp, and no area ever dips towards the basemap. Fading *from*
+transparent instead is not worth it: with a pyramid there is nearly always coarser
+data underneath, so every tile in the viewport would flash as it re-appeared.
 
 The canvas is only re-sized when its dimensions actually change,
 since assigning `width`/`height` blanks the drawing buffer — doing that on every
