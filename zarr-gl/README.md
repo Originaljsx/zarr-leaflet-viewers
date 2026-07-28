@@ -115,6 +115,14 @@ going blurry to sharp, and no area ever dips towards the basemap. Fading *from*
 transparent instead is not worth it: with a pyramid there is nearly always coarser
 data underneath, so every tile in the viewport would flash as it re-appeared.
 
+A tile that has not arrived falls back to a cached ancestor *and* to cached tiles
+from a finer zoom covering the same ground, each drawn on its own quad. Coarser
+fallback alone is not enough: zooming out abandons the tiles just displayed, so
+without the finer pass the view drops to a blurry ancestor — or, when eviction had
+taken the ancestors too, to nothing at all, which is the layer appearing to flash
+out and back in on a fast pan-zoom. Relatedly, eviction never drops an ancestor of
+a wanted tile, and only drops anything once the cache is over `tileCacheSize`.
+
 The canvas is only re-sized when its dimensions actually change,
 since assigning `width`/`height` blanks the drawing buffer — doing that on every
 pan is what made the layer flash black.

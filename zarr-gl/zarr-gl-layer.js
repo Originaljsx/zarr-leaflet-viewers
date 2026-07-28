@@ -382,6 +382,21 @@ export const ZarrGLLayer = L.Layer.extend({
     return `${tile.z}/${tile.x}/${tile.y}`
   },
 
+  /** Every ancestor key of `tiles`, coarsest included. */
+  _ancestorKeys(tiles) {
+    const keys = new Set()
+    for (const tile of tiles) {
+      let { z, x, y } = tile
+      while (z > 0) {
+        z -= 1
+        x = Math.floor(x / 2)
+        y = Math.floor(y / 2)
+        keys.add(`${z}/${x}/${y}`)
+      }
+    }
+    return keys
+  },
+
   /** Distinct parents of `tiles`, one zoom coarser. */
   _parentTiles(tiles) {
     const parents = new Map()
@@ -395,7 +410,6 @@ export const ZarrGLLayer = L.Layer.extend({
 
   _reconcileTiles() {
     const wanted = this._visibleTiles()
-    const tileZoom = this._getTileZoom()
     const keep = new Set()
     for (const tile of wanted) {
       const key = this._tileKey(tile)
@@ -417,13 +431,14 @@ export const ZarrGLLayer = L.Layer.extend({
       if (!keep.has(job.key)) this._pending.delete(job.key)
     }
     this._queue = this._queue.filter((job) => keep.has(job.key))
-    // Ancestors are kept so they can stand in for tiles that are still loading;
-    // anything else off screen goes, oldest first once over the cache size.
-    for (const key of [...this._tiles.keys()]) {
-      if (keep.has(key)) continue
-      const [z] = key.split('/').map(Number)
-      const overCapacity = this._tiles.size > this.options.tileCacheSize
-      if (z < tileZoom && !overCapacity) continue
+    // Ancestors stand in for tiles that have not arrived, so they have to
+    // survive eviction: dropping them once the cache filled is what let a fast
+    // pan-zoom leave the viewport with nothing to draw at all. Everything else
+    // off screen goes oldest first, and only to get back under the cache size.
+    const fallback = this._ancestorKeys(wanted)
+    for (const key of this._tiles.keys()) {
+      if (this._tiles.size <= this.options.tileCacheSize) break
+      if (keep.has(key) || fallback.has(key)) continue
       this._dropTile(key)
     }
     this._visible = wanted
@@ -606,22 +621,45 @@ export const ZarrGLLayer = L.Layer.extend({
 
     for (const tile of this._visible ?? []) {
       const cached = this._tiles.get(this._tileKey(tile)) ?? this._findAncestor(tile)
-      if (!cached) continue
-      // Whatever stands here just arrived, so ramp it up. That covers a coarse
-      // stand-in appearing at a panned edge, not only a tile sharpening over
-      // its parent.
-      const alpha = fade > 0 ? Math.min(1, (now - cached.createdAt) / fade) : 1
-      if (alpha < 1) {
-        fading = true
-        // What this texture replaces, at full opacity, so the area never dips
-        // towards the basemap while the new data ramps up over it.
-        const under = cached.tile && this._findAncestor(cached.tile)
-        if (under) this._drawTile(tile, under, 1)
+      if (cached) {
+        // Whatever stands here just arrived, so ramp it up. That covers a coarse
+        // stand-in appearing at a panned edge, not only a tile sharpening over
+        // its parent.
+        const alpha = fade > 0 ? Math.min(1, (now - cached.createdAt) / fade) : 1
+        if (alpha < 1) {
+          fading = true
+          // What this texture replaces, at full opacity, so the area never dips
+          // towards the basemap while the new data ramps up over it.
+          const under = cached.tile && this._findAncestor(cached.tile)
+          if (under) this._drawTile(tile, under, 1)
+        }
+        this._drawTile(tile, cached, alpha)
       }
-      this._drawTile(tile, cached, alpha)
+      // Tiles from a finer zoom covering the same ground, each on its own quad.
+      // Without this, zooming out has only coarser ancestors to fall back on —
+      // a blurry world texture at best, nothing at all at worst, which is the
+      // whole layer appearing to flash out and back in.
+      if (!this._tiles.has(this._tileKey(tile))) {
+        for (const finer of this._finerTiles(tile)) this._drawTile(finer.tile, finer, 1)
+      }
     }
     gl.bindVertexArray(null)
     if (fading) this._requestDraw()
+  },
+
+  /** Cached tiles at a finer zoom whose ground `tile` contains, coarsest first. */
+  _finerTiles(tile) {
+    const found = []
+    for (const cached of this._tiles.values()) {
+      const other = cached.tile
+      if (!other || other.z <= tile.z) continue
+      const step = 2 ** (other.z - tile.z)
+      if (Math.floor(other.x / step) !== tile.x) continue
+      if (Math.floor(other.y / step) !== tile.y) continue
+      found.push(cached)
+    }
+    // Coarsest first, so a finer tile is never hidden by its own parent.
+    return found.sort((a, b) => a.tile.z - b.tile.z)
   },
 
   /** One tile quad, sampling `cached`'s window, in normalized CRS units. */
