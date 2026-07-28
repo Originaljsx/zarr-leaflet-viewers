@@ -55,6 +55,8 @@ uniform vec2 u_lonBounds;      // west, east
 uniform vec2 u_latBounds;      // south, north
 uniform int u_latAscending;    // 1 when row 0 is the southern edge
 
+uniform int u_geographic;      // 1 = lon/lat degrees (fold on 360); 0 = projected units
+uniform int u_logScale;        // 1 = map clim in log10 space (positive data only)
 uniform vec2 u_clim;
 // Fill and valid range are in the stored (packed) domain, as CF defines them.
 uniform vec2 u_validRange;
@@ -79,9 +81,13 @@ void main() {
   }
 
   // Fold longitude into the window's own 360-degree band so world copies and
-  // windows that straddle the antimeridian both sample the same data.
+  // windows that straddle the antimeridian both sample the same data. Only for
+  // geographic grids: on a projected (metre) grid there is no wrap and a
+  // 360-degree fold would shred the coordinate, so sample the value directly.
   float lonSpan = u_lonBounds.y - u_lonBounds.x;
-  float lonFolded = u_lonBounds.x + mod(lon - u_lonBounds.x, 360.0);
+  float lonFolded = u_geographic == 1
+    ? u_lonBounds.x + mod(lon - u_lonBounds.x, 360.0)
+    : lon;
 
   float latSpan = u_latBounds.y - u_latBounds.x;
   float u = (lonFolded - u_lonBounds.x) / lonSpan;
@@ -98,7 +104,18 @@ void main() {
 
   float value = raw * u_scaleFactor + u_addOffset;
 
-  float normalized = clamp((value - u_clim.x) / (u_clim.y - u_clim.x), 0.0, 1.0);
+  // Linear clim, or log10 clim for wide-dynamic-range fields (e.g. radar sigma0).
+  // Log needs strictly positive inputs, so the value and both limits are floored
+  // to a small epsilon rather than producing NaN.
+  float normalized;
+  if (u_logScale == 1) {
+    const float EPS = 1e-6;
+    float lo = log(max(u_clim.x, EPS));
+    float hi = log(max(u_clim.y, EPS));
+    normalized = clamp((log(max(value, EPS)) - lo) / (hi - lo), 0.0, 1.0);
+  } else {
+    normalized = clamp((value - u_clim.x) / (u_clim.y - u_clim.x), 0.0, 1.0);
+  }
   vec4 color = texture(u_ramp, vec2(normalized, 0.5));
   fragColor = vec4(color.rgb, color.a * u_opacity);
 }

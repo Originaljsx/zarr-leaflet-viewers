@@ -140,22 +140,36 @@ function extentFromTransform(transform, shape, registration) {
 }
 
 export class ZarrSource {
-  constructor({ url, variable, selectors = {}, cacheBytes }) {
+  constructor({ url, variable, selectors = {}, cacheBytes, geographic = true }) {
     this.url = url
     this.variable = variable
     this.selectors = { ...selectors }
     this.cacheBytes = cacheBytes
+    // `false` when the grid is in projected units (e.g. EPSG:3413 metres) rather
+    // than lon/lat degrees: disables the antimeridian wrap in `readWindow`, whose
+    // 360-degree arithmetic is meaningless for a metre grid. Paired with the
+    // shader's `u_geographic` gate on the same fold.
+    this.geographic = geographic
     this.levels = []
     this.dimensionValues = {}
     this.readyPromise = this._open()
   }
 
   async _open() {
-    // Cached and deduplicated: tiles are far smaller than chunks, so a single
-    // viewport resolves many tiles to the same byte ranges.
-    this.store = new CachingStore(
-      new zarr.FetchStore(this.url, { overrides: { cache: 'no-store' } }),
-      { maxBytes: this.cacheBytes })
+    // Icechunk repos are not plain HTTP zarr trees: virtual chunk refs resolve
+    // through a snapshot, so they are opened by icechunk-js (imported lazily so
+    // the common plain-zarr path never pulls it) instead of a FetchStore. No
+    // CachingStore in front -- icechunk-js owns its own manifest/chunk fetching.
+    if (/\.icechunk(\/|$|\?|#)/.test(this.url)) {
+      const { IcechunkStore } = await import('icechunk-js')
+      this.store = await IcechunkStore.open(this.url)
+    } else {
+      // Cached and deduplicated: tiles are far smaller than chunks, so a single
+      // viewport resolves many tiles to the same byte ranges.
+      this.store = new CachingStore(
+        new zarr.FetchStore(this.url, { overrides: { cache: 'no-store' } }),
+        { maxBytes: this.cacheBytes })
+    }
     this.root = zarr.root(this.store)
     const group = await zarr.open(this.root, { kind: 'group' })
     const attrs = group.attrs ?? {}
@@ -268,7 +282,10 @@ export class ZarrSource {
    */
   async readWindow({ level, lonWest, lonEast, latSouth, latNorth, signal }) {
     const { lon, lat } = level
-    const fullWidth = lonEast - lonWest >= 360 - lon.step
+    // A projected (metre) grid never wraps: its axis is a bounded span, not a
+    // 360-degree circle, so `fullWidth` and the antimeridian split below are
+    // gated off and columns are simply clamped to the data instead.
+    const fullWidth = this.geographic && lonEast - lonWest >= 360 - lon.step
 
     const colOf = (value) => (value - lon.min) / lon.step
     const rowOf = (value) =>
@@ -280,16 +297,28 @@ export class ZarrSource {
     const latHigh = lat.ascending ? latNorth : latSouth
     const startRow = Math.max(0, Math.floor(rowOf(latLow)))
     const endRow = Math.min(lat.size, Math.ceil(rowOf(latHigh)))
-    if (endRow <= startRow || endCol <= startCol) return null
+    if (endRow <= startRow) return null
 
-    // Column ranges, wrapping across the antimeridian when needed.
+    // Column ranges. A geographic grid wraps across the antimeridian; a
+    // projected grid clamps to [0, size) with no wrap (the window may fall
+    // partly, or wholly, outside the data).
     const ranges = []
+    let firstCol
     if (fullWidth) {
       ranges.push([0, lon.size])
+      firstCol = 0
+    } else if (!this.geographic) {
+      const a = Math.max(0, Math.min(lon.size, startCol))
+      const b = Math.max(0, Math.min(lon.size, endCol))
+      if (b <= a) return null
+      ranges.push([a, b])
+      firstCol = a
     } else {
+      if (endCol <= startCol) return null
       const wrap = (c) => ((c % lon.size) + lon.size) % lon.size
       const width = endCol - startCol
       const first = wrap(startCol)
+      firstCol = first
       if (first + width <= lon.size) {
         ranges.push([first, first + width])
       } else {
@@ -326,7 +355,12 @@ export class ZarrSource {
 
     const stepLon = lon.step
     const stepLat = lat.step
-    const windowWest = fullWidth ? lon.min : lon.min + startCol * lon.step
+    // Geographic non-wrapped windows anchor on the unclamped `startCol` (the
+    // shader folds longitude); a projected window anchors on the clamped
+    // `firstCol` so the texture lands where the data actually starts.
+    const windowWest = fullWidth
+      ? lon.min
+      : lon.min + (this.geographic ? startCol : firstCol) * lon.step
     const rowTop = lat.ascending ? lat.min + startRow * lat.step : lat.max - startRow * lat.step
 
     return {

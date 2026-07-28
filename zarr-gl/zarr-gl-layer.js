@@ -36,6 +36,8 @@ const UNIFORM_NAMES = [
   'u_lonBounds',
   'u_latBounds',
   'u_latAscending',
+  'u_geographic',
+  'u_logScale',
   'u_clim',
   'u_validRange',
   'u_useFill',
@@ -57,6 +59,8 @@ export const ZarrGLLayer = L.Layer.extend({
     colors: null,
     /** [min, max] data values mapped across the colormap. */
     clim: [0, 1],
+    /** Map `clim` in log10 space instead of linear (positive data only). */
+    logScale: false,
     opacity: 1,
     /**
      * Tile size in pixels. Larger than a raster tile server's 256 on purpose:
@@ -79,6 +83,8 @@ export const ZarrGLLayer = L.Layer.extend({
     fadeDuration: 500,
     /** Load the parent zoom's tiles too, so zooming out has data to show. */
     prefetchParents: true,
+    /** `false` when the grid is in projected units (metres) rather than degrees. */
+    geographic: true,
     /** Only reconcile tiles once the map stops moving, as `L.GridLayer` can. */
     updateWhenIdle: false,
     /** Minimum gap between reconciliations while the map is moving. */
@@ -100,6 +106,7 @@ export const ZarrGLLayer = L.Layer.extend({
       variable: this.options.variable,
       selectors: this.options.selectors,
       cacheBytes: this.options.cacheBytes,
+      geographic: this.options.geographic,
     })
     this.readyPromise = this.source.readyPromise.then(
       () => {
@@ -170,8 +177,8 @@ export const ZarrGLLayer = L.Layer.extend({
 
   /* ------------------------------- public API ------------------------------ */
 
-  /** Update colormap, colour limits and/or opacity. */
-  updateStyle({ colors, clim, opacity } = {}) {
+  /** Update colormap, colour limits, log scaling and/or opacity. */
+  updateStyle({ colors, clim, logScale, opacity } = {}) {
     if (colors) {
       this.options.colors = colors
       if (this._gl) {
@@ -180,6 +187,7 @@ export const ZarrGLLayer = L.Layer.extend({
       }
     }
     if (clim) this.options.clim = clim
+    if (logScale !== undefined) this.options.logScale = logScale
     if (opacity !== undefined) this.options.opacity = opacity
     this._requestDraw()
   },
@@ -354,8 +362,14 @@ export const ZarrGLLayer = L.Layer.extend({
     const origin = this._origin
     const min = this._bounds.min.add(origin).multiplyBy(scale)
     const max = this._bounds.max.add(origin).multiplyBy(scale)
-    const worldSize = map.options.crs.scale(tileZoom)
-    const rows = Math.round(worldSize / tileSize)
+    // Rows in the world vertically at this zoom. `crs.scale(z)` is pixels-per-
+    // world only for Web Mercator, where the transformation maps the world onto
+    // [0,1]; for an `L.Proj.CRS` (scale = 1/resolution) that assumption gives ~0
+    // rows and no tiles. `getProjectedBounds` is the pixel size of the CRS's
+    // world at this zoom for both -- identical to the old value for EPSG:3857.
+    const worldPx = map.options.crs.getProjectedBounds(tileZoom)
+    const worldSizeY = worldPx ? worldPx.getSize().y : map.options.crs.scale(tileZoom)
+    const rows = Math.round(worldSizeY / tileSize)
 
     const tiles = []
     const xStart = Math.floor(min.x / tileSize)
@@ -621,6 +635,8 @@ export const ZarrGLLayer = L.Layer.extend({
     gl.uniform2f(uniforms.u_lonCoeff, info.lonA, info.lonB)
     gl.uniform2f(uniforms.u_latCoeff, info.latA ?? 0, info.latB ?? 0)
     gl.uniform2f(uniforms.u_mercCoeff, info.mercA ?? 0, info.mercB ?? 0)
+    gl.uniform1i(uniforms.u_geographic, source.geographic ? 1 : 0)
+    gl.uniform1i(uniforms.u_logScale, this.options.logScale ? 1 : 0)
     gl.uniform2f(uniforms.u_clim, this.options.clim[0], this.options.clim[1])
     gl.uniform2f(uniforms.u_validRange, finite(source.noDataMin), finite(source.noDataMax))
     gl.uniform1i(uniforms.u_useFill, source.fillValue === null ? 0 : 1)
