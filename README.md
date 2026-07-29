@@ -63,10 +63,10 @@ fork's `dist/` — so nothing here is currently out of sync or ahead of the fork
 
 There's no script that performs that copy automatically, though, so it will
 drift the next time the fork gets a fix and this directory isn't refreshed by
-hand. If you need a zarr-maps change, make it in the standalone fork
-(`/mnt/c/Users/jspier/zarr/zarr-maps` locally), run `npm run build` there, and
-copy the new `dist/` contents over this directory — don't patch the minified
-chunks in place.
+hand. If you need a zarr-maps change, make it in the standalone
+[zarr-maps](https://github.com/Originaljsx/zarr-maps) fork, run `npm run build`
+there, and copy the new `dist/` contents over this directory — don't patch the
+minified chunks in place.
 
 ## License
 
