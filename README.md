@@ -70,4 +70,4 @@ minified chunks in place.
 
 ## License
 
-None yet — to be added.
+Apache 2.0 — see [LICENSE](LICENSE).
