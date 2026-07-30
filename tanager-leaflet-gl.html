@@ -1,0 +1,601 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Planet Tanager hyperspectral (EPSG:3413) — Leaflet + WebGL</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; background: #05070d; }
+  #map { position: absolute; inset: 0; background: #05070d; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.78); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 272px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel select, #panel input[type=number] { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row label { flex: 1; }
+  #meta { margin-top: 6px; color: #aaa; min-height: 1em; }
+  #warn { margin-top: 4px; color: #fc6; min-height: 0; }
+  #warn:empty { display: none; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 1em; }
+  #bandlabel { color: #9fd; }
+  #bandlabel .flagged { color: #fc6; }
+  .modebtn {
+    flex: 1; padding: 4px 0; font: inherit; font-size: 12px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+  .modebtn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  input[type=range] { width: 100%; }
+  /* dual-thumb min/max: two range inputs stacked on one track */
+  .dual { position: relative; height: 30px; margin-top: 4px; }
+  .dual input[type=range] {
+    position: absolute; left: 0; top: 8px; margin: 0; width: 100%;
+    -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+  }
+  .dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    height: 14px; width: 14px; border-radius: 50%; background: #2563eb;
+    border: 2px solid #fff; cursor: pointer; margin-top: 0;
+  }
+  .dual input[type=range]::-moz-range-thumb {
+    pointer-events: auto; height: 14px; width: 14px; border-radius: 50%;
+    background: #2563eb; border: 2px solid #fff; cursor: pointer;
+  }
+  .dual .track { position: absolute; left: 0; right: 0; top: 13px; height: 4px;
+    background: #444; border-radius: 2px; }
+  .dual .fill { position: absolute; top: 13px; height: 4px; background: #2563eb;
+    border-radius: 2px; }
+  /* spectrum panel: the hyperspectral analogue of the MUR time-series box */
+  #spectrum {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: min(78%, 920px); z-index: 1000;
+    background: rgba(0,0,0,.78); border-radius: 6px; padding: 8px 10px 6px;
+    color: #ccc; font-size: 11px;
+  }
+  #sp-plot { width: 100%; height: 150px; }
+  #sp-plot svg { width: 100%; height: 100%; display: block; }
+  #sp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #sp-stats { color: #9fd; }
+  #sp-hint { color: #777; font-size: 10px; }
+  #sp-traces { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .sp-chip { padding: 1px 5px; border-radius: 3px; background: #262626; }
+  #sp-py {
+    white-space: pre; color: #7c9; font-size: 10px; margin-top: 5px;
+    max-height: 0; overflow: hidden; transition: max-height .15s;
+  }
+  #sp-py.open { max-height: 120px; overflow: auto; }
+  .smallbtn {
+    padding: 2px 7px; font: inherit; font-size: 10px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>Tanager surface reflectance</b>
+  <div id="meta">loading store…</div>
+  <div id="warn"></div>
+
+  <label>band <span id="bandlabel"></span>
+    <input id="band" type="range" min="0" max="0" step="1" value="0" />
+  </label>
+  <label>preset
+    <select id="preset"></select>
+  </label>
+
+  <label>colormap
+    <select id="cmap"></select>
+  </label>
+
+  <label>reflectance range</label>
+  <div class="row">
+    <label>min <input id="cminNum" type="number" step="0.01" /></label>
+    <label>max <input id="cmaxNum" type="number" step="0.01" /></label>
+  </div>
+  <div class="dual" id="dual">
+    <div class="track"></div><div class="fill" id="dualfill"></div>
+    <input id="cmin" type="range" />
+    <input id="cmax" type="range" />
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button type="button" id="autostretch" class="modebtn">Auto stretch (2–98%)</button>
+  </div>
+
+  <label>data opacity <span id="opval">100%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
+  </label>
+  <label>basemap
+    <select id="basemap"></select>
+  </label>
+
+  <div id="readout">click the scene for a spectrum</div>
+</div>
+
+<div id="spectrum">
+  <div id="sp-head">
+    <span id="sp-stats">no spectrum yet</span>
+    <span>
+      <button type="button" id="sp-py-btn" class="smallbtn">python</button>
+      <button type="button" id="sp-clear" class="smallbtn">clear</button>
+    </span>
+  </div>
+  <div id="sp-plot"></div>
+  <div id="sp-traces"></div>
+  <div id="sp-label" style="display:flex;justify-content:space-between;margin-top:3px;">
+    <span id="sp-hint">click adds a trace (3 kept) &nbsp;·&nbsp; &#8592; &#8594; change band</span>
+  </div>
+  <div id="sp-py"></div>
+</div>
+
+<script type="importmap">{"imports":{
+  "leaflet":"https://esm.sh/leaflet@1.9.4",
+  "zarrita":"https://esm.sh/zarrita@0.7.3",
+  "proj4":"https://esm.sh/proj4@2.15.0",
+  "icechunk-js":"https://esm.sh/icechunk-js@0.6.0"
+}}</script>
+<script type="module">
+import L from 'leaflet'
+import proj4 from 'proj4'
+// ?v= cache-buster: python http.server serves modules cacheable, so a bare
+// refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
+import { colormapBuilder } from './zarr-maps/index.js?v=3'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
+import * as zarr from 'zarrita'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+const el = (id) => document.getElementById(id)
+
+/* ---------- EPSG:3413 as a Leaflet CRS (same construction as the arctic viewer,
+   with two extra zooms: Tanager is 30 m data, so z8 = 32 m/px is native) ---------- */
+const EXTENT = 4194304
+const DEF3413 = '+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs'
+const pj = proj4('EPSG:4326', DEF3413)
+const RESOLUTIONS = [8192, 4096, 2048, 1024, 512, 256, 128, 64, 32, 16]  // m/px z0..9
+const SCALES = RESOLUTIONS.map((r) => 1 / r)
+const MAX_ZOOM = SCALES.length - 1
+const CRS3413 = L.Util.extend({}, L.CRS.Earth, {
+  code: 'EPSG:3413', infinite: false, wrapLng: false, wrapLat: false,
+  projection: {
+    project(latlng) { const [x, y] = pj.forward([latlng.lng, latlng.lat]); return new L.Point(x, y) },
+    unproject(point) { const [lng, lat] = pj.inverse([point.x, point.y]); return L.latLng(lat, lng) },
+    bounds: L.bounds([-EXTENT, -EXTENT], [EXTENT, EXTENT]),
+  },
+  transformation: new L.Transformation(1, EXTENT, -1, EXTENT),
+  scale(zoom) {
+    const i = Math.floor(zoom)
+    if (zoom === i || i + 1 >= SCALES.length) return SCALES[Math.min(i, SCALES.length - 1)]
+    return SCALES[i] + (SCALES[i + 1] - SCALES[i]) * (zoom - i)
+  },
+  zoom(scale) {
+    for (let i = 0; i < SCALES.length - 1; i++) {
+      if (scale <= SCALES[i]) return i
+      if (scale < SCALES[i + 1]) return i + (scale - SCALES[i]) / (SCALES[i + 1] - SCALES[i])
+    }
+    return SCALES.length - 1
+  },
+})
+
+/* ---------- config ---------- */
+const params = new URLSearchParams(location.search)
+// The 1.2 GB store is not in the repo. Served from GitHub Pages the page reads
+// it from CloudFront; served locally it finds a copy (or symlink) next to this
+// file first, so the same page works both ways. `?store=` overrides both.
+// Note: zarrita's FetchStore and icechunk-js both build a `new URL(...)`, which
+// throws on a relative path, so everything is absolutised here.
+const REMOTE_STORE = 'https://d1ef9node0gwi2.cloudfront.net/tanager/tanager3413_32m.zarr'
+const LOCAL_STORE = './tanager3413_32m.zarr'
+const abs = (u) => new URL(u, location.href).href
+const CANDIDATES = params.get('store')
+  ? [abs(params.get('store'))]
+  : [abs(LOCAL_STORE), REMOTE_STORE]
+let source = CANDIDATES[0]
+
+/** First candidate whose metadata actually answers. */
+async function resolveStore() {
+  const tried = []
+  for (const url of CANDIDATES) {
+    if (/\.icechunk(\/|$|\?|#)/.test(url)) return url   // not a plain zarr tree
+    try {
+      const response = await fetch(`${url}/zarr.json`, { method: 'GET', cache: 'no-store' })
+      if (response.ok) return url
+      tried.push(`${url} -> HTTP ${response.status}`)
+    } catch (err) {
+      tried.push(`${url} -> ${err.message}`)
+    }
+  }
+  throw new Error(`no store found. Tried: ${tried.join(' | ')}`)
+}
+const COLORMAP_NAMES = ['viridis', 'magma', 'inferno', 'plasma', 'cividis', 'turbo',
+  'Greys', 'Greys_r', 'bone', 'RdBu', 'RdBu_r', 'Spectral', 'YlGnBu', 'YlOrRd']
+// Wavelengths worth a shortcut: coastal/blue/green/red, red edge, NIR, the two
+// SWIR windows, and the 1380 nm cirrus band.
+const PRESETS = [
+  ['coastal 443 nm', 443], ['blue 490 nm', 490], ['green 560 nm', 560],
+  ['red 665 nm', 665], ['red edge 705 nm', 705], ['NIR 865 nm', 865],
+  ['water vapour 945 nm', 945], ['cirrus 1380 nm', 1380],
+  ['SWIR 1610 nm', 1610], ['SWIR 2200 nm', 2200],
+]
+let CLIM_RANGE = [0, 1.2]
+let clim = [0, 0.6]
+
+const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
+
+/* ---------- map + GIBS 3413 basemaps ---------- */
+const map = L.map('map', { crs: CRS3413, center: [76, -15], zoom: 6,
+  maxZoom: MAX_ZOOM, minZoom: 0 })
+const gibs = (layer, set, ext, maxNative, time = 'default') =>
+  L.tileLayer(
+    `https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/${layer}/default/${time}/${set}/{z}/{y}/{x}.${ext}`,
+    { tileSize: 512, minZoom: 0, maxZoom: MAX_ZOOM, maxNativeZoom: maxNative, noWrap: true,
+      bounds: L.latLngBounds([[40, -180], [90, 180]]), attribution: 'Imagery &copy; NASA GIBS' })
+const BASEMAPS = {
+  bluemarble: { label: 'Blue Marble', build: () => gibs('BlueMarble_NextGeneration', '500m', 'jpeg', 4) },
+  modis: { label: 'MODIS True Color (scene date)', dateDriven: true,
+    build: (date) => gibs('MODIS_Terra_CorrectedReflectance_TrueColor', '250m', 'jpeg', 5, date) },
+  none: { label: 'Coastline only (dark)', build: () => null },
+}
+for (const [k, v] of Object.entries(BASEMAPS)) el('basemap').add(new Option(v.label, k))
+let baseKey = params.get('basemap') in BASEMAPS ? params.get('basemap') : 'bluemarble'
+el('basemap').value = baseKey
+// GIBS identifier is 'Coastlines' in the epsg3413 endpoint ('Coastlines_15m'
+// is the epsg4326/3857 name and 400s here).
+gibs('Coastlines', '250m', 'png', 5).addTo(map)
+let baseLayer = null
+function setBasemap() {
+  if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null }
+  baseLayer = BASEMAPS[baseKey].build(sceneDate)
+  if (baseLayer) { baseLayer.addTo(map); baseLayer.bringToBack() }
+}
+el('basemap').onchange = () => { baseKey = el('basemap').value; setBasemap() }
+
+/* ---------- store metadata + spectra side channel ----------
+   The rendered pyramid is EPSG:3413; `spectra/` is the *native* UTM grid with a
+   spectral-major layout, so one clicked spectrum is a single chunk read of
+   unresampled values. Hence the second projection here. */
+let VAR = 'surface_reflectance'
+let wavelengths = [], goodBands = [], bandIdx = 0, sceneDate = 'default'
+let spectraArr = null, spectraGrid = null, spectraProj = null
+
+async function openRoot(url) {
+  if (/\.icechunk(\/|$|\?|#)/.test(url)) {
+    const { IcechunkStore } = await import('icechunk-js')
+    return zarr.root(await IcechunkStore.open(url))
+  }
+  return zarr.root(new zarr.FetchStore(url))
+}
+
+let root = null
+async function loadMetadata() {
+  root = await openRoot(source)
+  const group = await zarr.open(root, { kind: 'group' })
+  const attrs = group.attrs ?? {}
+  VAR = params.get('var') ?? attrs.variable ?? 'surface_reflectance'
+  wavelengths = attrs.wavelengths_nm ?? []
+  goodBands = attrs.good_wavelengths ?? wavelengths.map(() => 1)
+  const hint = attrs.clim_hint
+  if (Array.isArray(hint) && hint.length === 2 && hint[1] > hint[0]) {
+    clim = [Math.max(0, hint[0]), hint[1]]
+    // Keep headroom above the hint: bright ice reaches >1.0 reflectance in this
+    // scene, and the slider bounds are what limit how far it can be stretched.
+    CLIM_RANGE = [0, Math.max(1.2, Math.ceil(hint[1] * 2 * 10) / 10)]
+  }
+  const title = attrs.title ?? ''
+  const isoMatch = String(attrs.source ?? title).match(/(20\d{2})(\d{2})(\d{2})/)
+  if (isoMatch) sceneDate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+
+  // Level 0 bounds -> initial view.
+  const level0 = await zarr.open(await root.resolve('0'), { kind: 'group' })
+  const bounds = level0.attrs?.bounds
+  if (Array.isArray(bounds) && bounds.length === 4) {
+    const [w, s, e, n] = bounds
+    const corners = [[w, s], [w, n], [e, s], [e, n]]
+      .map(([x, y]) => CRS3413.projection.unproject(L.point(x, y)))
+    map.fitBounds(L.latLngBounds(corners), { padding: [40, 40] })
+  }
+
+  if (attrs.spectra_group) await loadSpectra(attrs.spectra_group)
+  return attrs
+}
+
+async function loadSpectra(groupPath) {
+  try {
+    const group = await zarr.open(await root.resolve(groupPath), { kind: 'group' })
+    spectraArr = await zarr.open(await root.resolve(`${groupPath}/${VAR}`), { kind: 'array' })
+    const gt = String(group.attrs?.GeoTransform ?? '').trim().split(/\s+/).map(Number)
+    // GDAL order: originX resX 0 originY 0 -resY, on cell *edges*.
+    const [left, resX, , top, , negResY] = gt
+    const [, ny, nx] = spectraArr.shape
+    spectraGrid = { left, top, resX, resY: Math.abs(negResY), ny, nx }
+    spectraProj = proj4('EPSG:4326', group.attrs?.proj4 ?? DEF3413)
+  } catch (err) {
+    console.warn('no spectra group; click readout falls back to the rendered band', err)
+    spectraArr = null
+  }
+}
+
+const clampI = (v, hi) => Math.min(hi, Math.max(0, Math.round(v)))
+
+/** Full spectrum at a click: one chunk of the spectral-major native array. */
+async function readSpectrum(latlng) {
+  if (!spectraArr) return null
+  const [x, y] = spectraProj.forward([latlng.lng, latlng.lat])
+  const col = clampI((x - spectraGrid.left) / spectraGrid.resX - 0.5, spectraGrid.nx - 1)
+  const row = clampI((spectraGrid.top - y) / spectraGrid.resY - 0.5, spectraGrid.ny - 1)
+  const inside = x >= spectraGrid.left && y <= spectraGrid.top &&
+    x <= spectraGrid.left + spectraGrid.resX * spectraGrid.nx &&
+    y >= spectraGrid.top - spectraGrid.resY * spectraGrid.ny
+  if (!inside) return null
+  const out = await zarr.get(spectraArr, [zarr.slice(null), row, col])
+  return { values: Array.from(out.data, Number), row, col }
+}
+
+/* ---------- data layer ---------- */
+let layer = null
+function buildLayer() {
+  layer = new ZarrGLLayer({
+    url: source, variable: VAR, geographic: false, tileSize: 512, maxZoom: MAX_ZOOM,
+    clim, colors: colormapBuilder(el('cmap').value),
+    opacity: parseFloat(el('opacity').value),
+    selectors: { wavelength: bandIdx },
+  }).addTo(map)
+  layer.readyPromise.then(updateMeta, (err) => {
+    warnEl.textContent = 'layer load error (see console)'; console.error(err)
+  })
+}
+function updateMeta() {
+  const levels = layer?.source?.levels?.length ?? 0
+  metaEl.textContent =
+    `${VAR} · ${wavelengths.length} bands · EPSG:3413 · ${levels} levels · ${sceneDate}`
+}
+
+/* ---------- band control ---------- */
+function bandText(i) {
+  const nm = wavelengths[i]
+  const flagged = goodBands[i] === 0 ? ' <span class="flagged">(flagged)</span>' : ''
+  return nm === undefined ? '' : `${nm.toFixed(1)} nm · idx ${i}${flagged}`
+}
+function setBand(i, { fromSlider = false } = {}) {
+  bandIdx = Math.min(wavelengths.length - 1, Math.max(0, i))
+  if (!fromSlider) el('band').value = bandIdx
+  el('bandlabel').innerHTML = bandText(bandIdx)
+  layer?.updateSelectors({ wavelength: bandIdx })
+  updateMeta()
+  renderSpectra()          // move the current-band marker
+  updateReadout()
+}
+function nearestBand(nm) {
+  let best = 0, bestD = Infinity
+  wavelengths.forEach((w, i) => { const d = Math.abs(w - nm); if (d < bestD) { bestD = d; best = i } })
+  return best
+}
+el('band').oninput = () => setBand(+el('band').value, { fromSlider: true })
+el('preset').onchange = () => {
+  const nm = parseFloat(el('preset').value)
+  if (Number.isFinite(nm)) setBand(nearestBand(nm))
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+  setBand(bandIdx + (e.key === 'ArrowRight' ? 1 : -1))
+})
+
+/* ---------- colormap / opacity ---------- */
+el('cmap').onchange = () => { layer?.updateStyle({ colors: colormapBuilder(el('cmap').value) }); renderClimUI() }
+el('opacity').oninput = () => {
+  el('opval').textContent = `${Math.round(parseFloat(el('opacity').value) * 100)}%`
+  layer?.updateStyle({ opacity: parseFloat(el('opacity').value) })
+}
+
+/* ---------- min/max: dual-thumb slider + typed inputs ---------- */
+const cmin = el('cmin'), cmax = el('cmax'), cminNum = el('cminNum'), cmaxNum = el('cmaxNum')
+const STEP = 0.01
+const clampC = (v) => Math.max(CLIM_RANGE[0], Math.min(CLIM_RANGE[1], v))
+function cssGradient(name) {
+  const cols = colormapBuilder(name), n = cols.length
+  const stops = cols.map((c, i) => {
+    const s = (c[0] <= 1 && c[1] <= 1 && c[2] <= 1) ? 255 : 1
+    return `rgb(${Math.round(c[0] * s)},${Math.round(c[1] * s)},${Math.round(c[2] * s)}) ${(i / (n - 1) * 100).toFixed(1)}%`
+  })
+  return `linear-gradient(to right, ${stops.join(',')})`
+}
+function renderClimUI() {
+  const [lo, hi] = clim, span = CLIM_RANGE[1] - CLIM_RANGE[0], fill = el('dualfill')
+  cmin.value = lo; cmax.value = hi; cminNum.value = lo.toFixed(2); cmaxNum.value = hi.toFixed(2)
+  fill.style.left = `${((lo - CLIM_RANGE[0]) / span) * 100}%`
+  fill.style.width = `${((hi - lo) / span) * 100}%`
+  fill.style.background = cssGradient(el('cmap').value)
+}
+function setClim(lo, hi) {
+  lo = clampC(lo); hi = clampC(hi)
+  if (lo > hi) [lo, hi] = [hi, lo]
+  clim = [lo, hi]; renderClimUI(); layer?.updateStyle({ clim })
+}
+function initClim() {
+  for (const s of [cmin, cmax]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
+  for (const s of [cminNum, cmaxNum]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1] }
+  renderClimUI()
+}
+cmin.oninput = () => setClim(+cmin.value, +cmax.value)
+cmax.oninput = () => setClim(+cmin.value, +cmax.value)
+cminNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+cmaxNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+
+/* Auto stretch from the coarsest level of the current band -- a few small
+   chunks, so it costs about one tile. */
+el('autostretch').onclick = async () => {
+  if (!layer?.source?.levels?.length) return
+  const btn = el('autostretch'); const old = btn.textContent
+  btn.textContent = 'reading…'; btn.disabled = true
+  try {
+    const levels = layer.source.levels
+    const coarse = levels[levels.length - 1]
+    const chunk = await zarr.get(coarse.array, [bandIdx, zarr.slice(null), zarr.slice(null)])
+    const values = Array.from(chunk.data, Number).filter(Number.isFinite).sort((a, b) => a - b)
+    if (values.length) {
+      const at = (p) => values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))]
+      setClim(Math.max(0, at(0.02)), at(0.98))
+    }
+  } catch (err) { console.error(err) } finally { btn.textContent = old; btn.disabled = false }
+}
+
+/* ---------- spectrum panel (the analogue of the MUR time series) ---------- */
+const TRACE_COLORS = ['#60a5fa', '#f4a582', '#a3e635']
+let traces = []          // [{ lat, lon, values, row, col }]
+let clickSeq = 0
+
+function renderSpectra() {
+  const box = el('sp-plot')
+  if (!traces.length) {
+    box.innerHTML = ''
+    el('sp-traces').innerHTML = ''
+    return
+  }
+  const W = 900, H = 150, padL = 42, padR = 8, padT = 8, padB = 20
+  const finite = traces.flatMap((t) => t.values.filter(Number.isFinite))
+  const lo = Math.min(...finite), hi = Math.max(...finite)
+  const span = (hi - lo) || 1
+  const wl0 = wavelengths[0], wl1 = wavelengths[wavelengths.length - 1]
+  const X = (nm) => padL + (nm - wl0) / (wl1 - wl0) * (W - padL - padR)
+  const Y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / span)
+
+  const paths = traces.map((t, ti) => {
+    let d = '', pen = false
+    t.values.forEach((v, i) => {
+      if (Number.isFinite(v)) { d += `${pen ? 'L' : 'M'}${X(wavelengths[i]).toFixed(1)} ${Y(v).toFixed(1)} `; pen = true }
+      else pen = false
+    })
+    return `<path d="${d}" fill="none" stroke="${TRACE_COLORS[ti % TRACE_COLORS.length]}" stroke-width="1.3"/>`
+  }).join('')
+
+  // Horizontal gridlines with reflectance labels, plus wavelength ticks.
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + f * span)
+  const grid = yTicks.map((v) =>
+    `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${W - padR}" y2="${Y(v).toFixed(1)}" stroke="#334" stroke-width="0.5"/>` +
+    `<text x="${padL - 4}" y="${(Y(v) + 3).toFixed(1)}" fill="#889" font-size="9" text-anchor="end">${v.toFixed(2)}</text>`
+  ).join('')
+  const xTicks = [500, 1000, 1500, 2000, 2500].filter((nm) => nm >= wl0 && nm <= wl1)
+  const xAxis = xTicks.map((nm) =>
+    `<line x1="${X(nm).toFixed(1)}" y1="${padT}" x2="${X(nm).toFixed(1)}" y2="${H - padB}" stroke="#243" stroke-width="0.5" stroke-dasharray="2 3"/>` +
+    `<text x="${X(nm).toFixed(1)}" y="${H - padB + 12}" fill="#889" font-size="9" text-anchor="middle">${nm}</text>`
+  ).join('')
+
+  // Bands flagged bad in the store, and the band the map is showing.
+  let flagged = ''
+  for (let i = 0; i < goodBands.length; i++) {
+    if (goodBands[i] === 0) {
+      flagged += `<rect x="${X(wavelengths[i]).toFixed(1)}" y="${H - padB - 3}" width="1.4" height="3" fill="#fc6" opacity="0.7"/>`
+    }
+  }
+  const cur = wavelengths[bandIdx]
+  const marker = Number.isFinite(cur)
+    ? `<line x1="${X(cur).toFixed(1)}" y1="${padT}" x2="${X(cur).toFixed(1)}" y2="${H - padB}" stroke="#fd9" stroke-width="1"/>` +
+      traces.map((t, ti) => Number.isFinite(t.values[bandIdx])
+        ? `<circle cx="${X(cur).toFixed(1)}" cy="${Y(t.values[bandIdx]).toFixed(1)}" r="2.6" fill="${TRACE_COLORS[ti % TRACE_COLORS.length]}"/>`
+        : '').join('')
+    : ''
+
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `${grid}${xAxis}${flagged}${paths}${marker}` +
+    `<text x="${W - padR}" y="${H - padB + 12}" fill="#667" font-size="9" text-anchor="end">wavelength (nm)</text></svg>`
+
+  el('sp-traces').innerHTML = traces.map((t, ti) =>
+    `<span class="sp-chip" style="color:${TRACE_COLORS[ti % TRACE_COLORS.length]}">` +
+    `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)} · px ${t.col},${t.row}</span>`).join('')
+
+  const last = traces[traces.length - 1]
+  const lastFinite = last.values.filter(Number.isFinite)
+  el('sp-stats').textContent = lastFinite.length
+    ? `${lastFinite.length}/${last.values.length} bands · min ${Math.min(...lastFinite).toFixed(3)}` +
+      ` · max ${Math.max(...lastFinite).toFixed(3)}` +
+      ` · at ${cur?.toFixed(1)} nm: ${Number.isFinite(last.values[bandIdx]) ? last.values[bandIdx].toFixed(4) : 'no data'}`
+    : 'no data at that pixel'
+}
+
+function pythonSnippet() {
+  const url = source.replace(/\/$/, '')
+  const t = traces[traces.length - 1]
+  if (!t) return ''
+  return `import xarray as xr\n` +
+    `# rendered pyramid (EPSG:3413): group "0" = full res\n` +
+    `viz = xr.open_zarr("${url}", group="0")["${VAR}"]\n` +
+    `# native-grid spectra (UTM), spectral-major: one chunk per pixel spectrum\n` +
+    `spec = xr.open_zarr("${url}", group="spectra")["${VAR}"]\n` +
+    `spec.isel(y=${t.row}, x=${t.col}).plot()   # ${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}`
+}
+
+function updateReadout() {
+  const t = traces[traces.length - 1]
+  if (!t) return
+  const v = t.values[bandIdx]
+  readoutEl.textContent = `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}: ` +
+    (Number.isFinite(v) ? `${v.toFixed(4)} @ ${wavelengths[bandIdx].toFixed(1)} nm` : 'no data')
+}
+
+map.on('click', async (e) => {
+  const where = `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
+  const seq = ++clickSeq
+  readoutEl.textContent = `${where}: reading spectrum…`
+  try {
+    const result = await readSpectrum(e.latlng)
+    if (seq !== clickSeq) return
+    if (!result) { readoutEl.textContent = `${where}: outside the scene`; return }
+    if (!result.values.some(Number.isFinite)) {
+      readoutEl.textContent = `${where}: no data at that pixel`; return
+    }
+    traces.push({ lat: e.latlng.lat, lon: e.latlng.lng, ...result })
+    if (traces.length > TRACE_COLORS.length) traces.shift()
+    renderSpectra()
+    updateReadout()
+    if (el('sp-py').classList.contains('open')) el('sp-py').textContent = pythonSnippet()
+  } catch (err) {
+    console.error(err)
+    if (seq === clickSeq) readoutEl.textContent = `${where}: spectrum failed (see console)`
+  }
+})
+
+el('sp-clear').onclick = () => { traces = []; renderSpectra(); el('sp-stats').textContent = 'no spectrum yet' }
+el('sp-py-btn').onclick = () => {
+  const box = el('sp-py')
+  box.classList.toggle('open')
+  box.textContent = box.classList.contains('open') ? pythonSnippet() : ''
+}
+
+/* ---------- boot ---------- */
+for (const name of COLORMAP_NAMES) el('cmap').add(new Option(name, name))
+el('cmap').value = params.get('cmap') ?? 'viridis'
+el('preset').add(new Option('—', ''))
+for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
+
+;(async () => {
+  try {
+    source = await resolveStore()
+    await loadMetadata()
+    el('band').max = Math.max(0, wavelengths.length - 1)
+    const startNm = parseFloat(params.get('nm') ?? '')
+    bandIdx = Number.isFinite(startNm) ? nearestBand(startNm)
+      : Math.min(wavelengths.length - 1, +(params.get('band') ?? nearestBand(865)))
+    el('band').value = bandIdx
+    el('bandlabel').innerHTML = bandText(bandIdx)
+    initClim(); setBasemap(); buildLayer()
+  } catch (err) {
+    metaEl.textContent = 'failed to open store'
+    warnEl.innerHTML = `${String(err.message ?? err)}<br><br>` +
+      'The 1.2 GB store lives outside the repo. Serve a copy next to this page ' +
+      '(a symlink works), or point at one with <code>?store=&lt;url&gt;</code>.'
+    console.error(err)
+  }
+})()
+
+window.__tanager = { get layer() { return layer }, get map() { return map }, CRS3413, source,
+  get wavelengths() { return wavelengths }, get traces() { return traces },
+  get bandIdx() { return bandIdx } }
+window.__leafletMap = map
+</script>
+</body>
+</html>

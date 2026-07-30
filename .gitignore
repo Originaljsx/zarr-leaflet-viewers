@@ -1,0 +1,4 @@
+# Local Zarr stores (or symlinks to them) served next to the viewers.
+# Too large for the repo, and a symlink pointing outside it breaks Pages builds.
+*.zarr
+*.icechunk

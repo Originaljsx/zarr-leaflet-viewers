@@ -31,6 +31,15 @@ statically.
 - **`arctic-leaflet-gl.html`** — SWOT data reprojected to EPSG:3413 (polar
   stereographic), also on `zarr-gl`, with pass/day/cycle mode switching and a
   bottom timeline control.
+- **`tanager-leaflet-gl.html`** — Planet Tanager-1 hyperspectral surface
+  reflectance, 426 bands from 376 to 2499 nm, on EPSG:3413 with the same CRS and
+  GIBS basemaps as the arctic viewer (two extra zooms, since the data is 30 m).
+  The band slider is a `wavelength` selector, so switching bands refetches only
+  that band's chunks; clicking the scene plots the pixel's whole spectrum, read
+  from a spectral-major copy of the cube on its native UTM grid — one chunk per
+  spectrum, unresampled. Store built by `tanager_ic.export_gl` (the
+  `hyperspectral` project) from an Icechunk spec-v2 repository; see "Tanager
+  store layout" below.
 
 ## zarr-gl/
 
@@ -50,6 +59,63 @@ dependencies.
 See `zarr-gl/README.md` for the design notes — why per-fragment projection
 instead of a stretched texture, how tile size interacts with chunk size, and
 the fallback/fade behavior while tiles are loading.
+
+## Tanager store layout
+
+The store is 1.19 GB (9363 chunk files), so unlike the pages above it is **not**
+in this repo. `tanager-leaflet-gl.html` tries a copy sitting next to itself first
+and falls back to CloudFront, so the same page works locally and on Pages:
+
+| order | URL |
+| --- | --- |
+| 1 | `./tanager3413_32m.zarr` — a local copy or symlink, when serving the repo |
+| 2 | `https://d1ef9node0gwi2.cloudfront.net/tanager/tanager3413_32m.zarr` |
+| — | `?store=<url>` overrides both (an `.icechunk` URL is used as-is) |
+
+Until that CloudFront path is populated, the published page reports which URLs
+it tried. The store is written by `tanager_ic.export_gl` and is shaped for
+`zarr-gl` exactly as it reads:
+
+```
+tanager3413_32m.zarr/
+  zarr.json                    multiscales -> "0","1","2"; variable, proj4, epsg,
+                               wavelengths_nm, good_wavelengths, clim_hint, spectra_group
+  0/surface_reflectance        (wavelength, y, x) float32, chunks (1, 256, 256), 32 m EPSG:3413
+  0/{x,y,wavelength,good_wavelengths}
+  1/… 2/…                      2x / 4x decimated (NaN-aware mean), 64 m and 128 m
+  spectra/surface_reflectance  (wavelength, y, x), chunks (426, 16, 16), native 30 m UTM 28N
+  spectra/{x,y,wavelength,good_wavelengths}
+```
+
+Both grids are float32 with `NaN` as the Zarr `fill_value`, which the fragment
+shader's `raw != raw` test discards, so no `_FillValue` handling is needed. The
+levels' cell-edge extents come out of their own coordinate arrays, so
+`axisExtent()` gets them right without a `spatial:transform`.
+
+The store carries two chunk layouts because the two questions want opposite
+things: rendering a band wants one band per chunk (`(1, 256, 256)`, ~190 KB over
+the wire per tile), while a pixel spectrum wants every band in one chunk
+(`(426, 16, 16)`, ~280 KB for all 426 values). The `spectra` group stays on the
+native UTM grid and is never resampled, so the plotted numbers are the values
+Planet delivered; the viewer's click handler projects lon/lat with the `proj4`
+string in that group's attributes.
+
+Serving locally — symlink the store in rather than copying 1.2 GB, and it takes
+priority over CloudFront:
+
+```bash
+ln -s /path/to/hyperspectral/web/tanager3413_32m.zarr tanager3413_32m.zarr
+python -m http.server 8000        # then open http://localhost:8000/tanager-leaflet-gl.html
+```
+
+`.gitignore` keeps that symlink out of commits — a symlink pointing outside the
+repo would break the Pages build.
+
+Two caveats on `python -m http.server`: it is single-threaded, so the layer's 16
+concurrent chunk fetches serialise, and it ignores `Range` (answering `200`, not
+`206`). Whole-chunk plain-Zarr reads survive both, but an `.icechunk` URL goes
+through `icechunk-js`, which wants ranges. `hyperspectral/scripts/serve.py` is a
+threaded, range-capable, CORS-enabled drop-in if either bites.
 
 ## zarr-maps/
 
