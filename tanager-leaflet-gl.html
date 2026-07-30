@@ -220,7 +220,7 @@ const PRESETS = [
   ['SWIR 1610 nm', 1610], ['SWIR 2200 nm', 2200],
 ]
 let CLIM_RANGE = [0, 1.2]
-let clim = [0, 0.6]
+let clim = [0, 1.2]
 
 const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
 
@@ -276,11 +276,12 @@ async function loadMetadata() {
   VAR = params.get('var') ?? attrs.variable ?? 'surface_reflectance'
   wavelengths = attrs.wavelengths_nm ?? []
   goodBands = attrs.good_wavelengths ?? wavelengths.map(() => 1)
+  // The default range is the full 0-1.2 reflectance span, not the store's
+  // `clim_hint`: bright ice in this scene runs past 1.0, and a hint-tight
+  // default clips it. The hint only widens the slider bounds for a store whose
+  // values go higher still; "Auto stretch" is there for a per-band range.
   const hint = attrs.clim_hint
   if (Array.isArray(hint) && hint.length === 2 && hint[1] > hint[0]) {
-    clim = [Math.max(0, hint[0]), hint[1]]
-    // Keep headroom above the hint: bright ice reaches >1.0 reflectance in this
-    // scene, and the slider bounds are what limit how far it can be stretched.
     CLIM_RANGE = [0, Math.max(1.2, Math.ceil(hint[1] * 2 * 10) / 10)]
   }
   const title = attrs.title ?? ''
@@ -568,7 +569,7 @@ el('sp-py-btn').onclick = () => {
 
 /* ---------- boot ---------- */
 for (const name of COLORMAP_NAMES) el('cmap').add(new Option(name, name))
-el('cmap').value = params.get('cmap') ?? 'viridis'
+el('cmap').value = params.get('cmap') ?? 'bone'
 el('preset').add(new Option('—', ''))
 for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
 
