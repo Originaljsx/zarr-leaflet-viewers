@@ -347,11 +347,34 @@ function buildLayer() {
     warnEl.textContent = 'layer load error (see console)'; console.error(err)
   })
 }
+/** What the layer is actually drawing right now, in the store's own units.
+ *
+ * `chooseLevel` picks the coarsest level whose cell size still resolves the
+ * screen, so this mirrors the layer's own decision rather than guessing from
+ * the zoom. Worth surfacing: the rendered pyramid is a 32 m EPSG:3413 grid
+ * resampled from the 30 m UTM source, so "level 0" is the finest available but
+ * not the native grid -- only the clicked spectra are unresampled.
+ */
+function currentLevelInfo() {
+  const mPerPx = 1 / CRS3413.scale(map.getZoom())
+  const level = layer?.source?.chooseLevel?.(mPerPx)
+  if (!level) return { mPerPx, text: '—' }
+  const state = mPerPx < level.lon.step ? 'upsampled'
+    : mPerPx > level.lon.step * 1.5 ? 'downsampled' : '1:1'
+  return { mPerPx, level, text: `level ${level.path} (${level.lon.step} m) · ${state}` }
+}
 function updateMeta() {
   const levels = layer?.source?.levels?.length ?? 0
-  metaEl.textContent =
-    `${VAR} · ${wavelengths.length} bands · EPSG:3413 · ${levels} levels · ${sceneDate}`
+  const info = currentLevelInfo()
+  metaEl.innerHTML =
+    `${VAR} · ${wavelengths.length} bands · ${sceneDate}<br>` +
+    `EPSG:3413 · ${levels} levels · screen ${info.mPerPx.toFixed(0)} m/px · ${info.text}`
+  metaEl.title =
+    'Rendered pyramid: 32 / 64 / 128 m EPSG:3413, nearest-resampled from the ' +
+    '30 m UTM 28N source (level 0 samples ~80% of source pixels). ' +
+    'Clicked spectra come from the native 30 m grid and are not resampled.'
 }
+map.on('zoomend', updateMeta)
 
 /* ---------- band control ---------- */
 function bandText(i) {
