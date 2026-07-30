@@ -196,7 +196,7 @@ const BASEMAPS = {
 for (const [k, v] of Object.entries(BASEMAPS)) el('basemap').add(new Option(v.label, k))
 let baseKey = params.get('basemap') in BASEMAPS ? params.get('basemap') : 'bluemarble'
 el('basemap').value = baseKey
-const coastlines = gibs('Coastlines_15m', '250m', 'png', 5).addTo(map)
+const coastlines = gibs('Coastlines', '250m', 'png', 5).addTo(map)
 let baseLayer = null
 function setBasemap() {
   if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null }
