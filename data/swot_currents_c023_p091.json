@@ -1,0 +1,51 @@
+{
+  "granule": "SWOT_L3_LR_SSH_Expert_023_091_20241025T111548_20241025T120714_v3.0.nc",
+  "cycle": 23,
+  "pass": 91,
+  "time": "2024-10-25T11:15:48",
+  "shape": [
+    6277,
+    69
+  ],
+  "lines_dropped": 3583,
+  "bin": "swot_currents_c023_p091.bin",
+  "arrays": {
+    "lat": {
+      "offset": 0,
+      "bytes": 1732452,
+      "dtype": "float32"
+    },
+    "lon": {
+      "offset": 1732452,
+      "bytes": 1732452,
+      "dtype": "float32"
+    },
+    "u": {
+      "offset": 3464904,
+      "bytes": 1732452,
+      "dtype": "float32"
+    },
+    "v": {
+      "offset": 5197356,
+      "bytes": 1732452,
+      "dtype": "float32"
+    }
+  },
+  "variables": {
+    "u": "ugos_filtered",
+    "v": "vgos_filtered",
+    "units": "m/s"
+  },
+  "bbox": [
+    -134.50277709960938,
+    -75.38812255859375,
+    -1.51133394241333,
+    78.27201843261719
+  ],
+  "valid_fraction": 0.7091936746299464,
+  "speed": {
+    "median": 0.16998852789402008,
+    "p99": 1.9800901412963867,
+    "max": 8.472402572631836
+  }
+}

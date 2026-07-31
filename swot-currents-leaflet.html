@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>SWOT Geostrophic Currents (Leaflet)</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; }
+  #map { position: absolute; inset: 0; background: #000; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.75); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 260px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel input, #panel select { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  #panel .row label { margin-top: 0; }
+  #meta { margin-top: 6px; color: #aaa; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 3.2em; }
+  #note { margin-top: 8px; color: #888; font-size: 11px; line-height: 1.35; }
+  #bar { height: 10px; border-radius: 2px; margin-top: 6px; }
+  #ticks { display: flex; justify-content: space-between; color: #aaa; font-size: 11px; }
+  .chk { display: flex; align-items: center; gap: 6px; }
+  .chk input { width: auto; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>SWOT Geostrophic Currents</b>
+  <div id="meta">loading swath…</div>
+
+  <label>go to
+    <select id="place">
+      <option value="30,-79.5,6">Gulf Stream (Florida)</option>
+      <option value="4,-84,6">Eastern tropical Pacific</option>
+      <option value="-50,-120,5">Southern Ocean</option>
+      <option value="20,-70,3">whole pass</option>
+    </select>
+  </label>
+
+  <label>current speed
+    <div id="bar"></div>
+    <div id="ticks"></div>
+  </label>
+
+  <label>swath opacity <span id="opval">75%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.75" />
+  </label>
+
+  <div class="row">
+    <label class="chk"><input id="pause" type="checkbox" /> pause particles</label>
+  </div>
+
+  <div id="readout">click the swath for a value</div>
+  <div id="note"></div>
+</div>
+
+<script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4"}}</script>
+<script type="module">
+import L from 'leaflet'
+import { currentLayer, CURRENT_LEGEND } from './currents/currents-layer.js?v=1'
+import { loadSwathField } from './currents/currents-layer.js?v=1'
+
+const el = (id) => document.getElementById(id)
+const params = new URLSearchParams(location.search)
+const DATA = params.get('data') || 'data/swot_currents_c023_p091.json'
+
+const map = L.map('map', { center: [30, -79.5], zoom: 6, worldCopyJump: true })
+L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+}).addTo(map)
+
+// ---------- legend ----------
+el('bar').style.background = CURRENT_LEGEND.css
+el('ticks').innerHTML = CURRENT_LEGEND.ticks.map((t) => `<span>${t}</span>`).join('')
+
+// ---------- layer ----------
+const layer = currentLayer({ rasterOpacity: 0.75 }).addTo(map)
+
+el('opacity').oninput = () => {
+  const v = +el('opacity').value
+  layer.setRasterOpacity(v)
+  el('opval').textContent = Math.round(v * 100) + '%'
+}
+el('pause').onchange = () => layer.setPaused(el('pause').checked)
+el('place').onchange = () => {
+  const [lat, lon, z] = el('place').value.split(',').map(Number)
+  map.setView([lat, lon], z)
+}
+
+map.on('click', (e) => {
+  const r = layer.at(e.latlng.lat, e.latlng.lng, layer.cutoff())
+  if (!r) {
+    el('readout').textContent = 'no data at that point'
+    return
+  }
+  el('readout').innerHTML =
+    `speed <b>${r.speed.toFixed(3)}</b> m/s<br>` +
+    `toward ${r.dir.toFixed(0)}&deg;<br>` +
+    `u ${r.u.toFixed(3)}  v ${r.v.toFixed(3)} m/s`
+})
+
+// ---------- data ----------
+const swath = await loadSwathField(DATA)
+layer.setData(swath)
+
+const m = swath.meta
+el('meta').innerHTML =
+  `cycle ${m.cycle} pass ${m.pass} &middot; ${m.time.replace('T', ' ')}Z<br>` +
+  `${m.shape[0]} &times; ${m.shape[1]} samples, ${(m.valid_fraction * 100).toFixed(0)}% valid<br>` +
+  `${m.variables.u} / ${m.variables.v}`
+
+// Two honest caveats about what is on screen, kept next to it rather than in a
+// README nobody opens.
+el('note').innerHTML =
+  'Absolute geostrophic velocity on the native 2 km swath — no regridding. ' +
+  'Particle speed is stylised for legibility; the colour is the true speed.<br><br>' +
+  'Geostrophy breaks down at the equator (the Coriolis parameter goes to zero), ' +
+  'so the very fast values in the tropical band are a property of the ' +
+  'derivation, not the ocean.'
+
+window.__map = map
+window.__layer = layer
+window.__swath = swath
+</script>
+</body>
+</html>

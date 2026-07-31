@@ -41,6 +41,61 @@ statically.
   `hyperspectral` project) from an Icechunk spec-v2 repository; see "Tanager
   store layout" below.
 
+- **`swot-currents-leaflet.html`** — SWOT L3 geostrophic currents as an animated
+  particle field, Windy-style: a colour raster carries true speed and pale
+  streaks carry direction. The odd one out here — it reads no Zarr at all and
+  renders the swath on its **native curvilinear grid**; see "Currents on the
+  native swath" below.
+
+## Currents on the native swath
+
+Every other page streams a regridded multiscale pyramid. This one does not, and
+the reason is worth stating: a single SWOT L3 granule is ~6.9 MB as raw
+`float32` (4.2 MB gzipped), small enough to ship whole, so resampling it onto a
+regular grid would add error and buy nothing. The trade does not generalise —
+a whole cycle would be gigabytes — which is exactly why the Zarr pipeline
+exists for anything larger.
+
+| file | role |
+|---|---|
+| `tools/swot_l3_currents.py` | one L3 granule → `.bin` + `.json` manifest |
+| `currents/currents-layer.js` | `SwathField` lookup + the animated `L.Layer` |
+| `data/swot_currents_*.{bin,json}` | the payload, committed so Pages can serve it |
+
+```bash
+python tools/swot_l3_currents.py SWOT_L3_LR_SSH_Expert_023_091_*.nc \
+    -o data/swot_currents_c023_p091
+```
+
+The manifest gives each array's byte offset into a single `.bin`, so the page
+does one fetch and takes typed-array views over the result. `?data=<url>` points
+the page at a different granule.
+
+The interesting part is the lookup. `latitude` and `longitude` are 2-D fields
+over `(line, pixel)`, so there is no index formula and no bilinear shortcut —
+"what is (u, v) here" needs a search. Two properties of a single half-orbit make
+that cheap enough to skip a spatial index: latitude is monotone along-track (so
+the per-line latitude bounds are monotone too, and two binary searches bound the
+candidate lines exactly), and a line is only 69 samples wide. A typical query
+touches ~15 lines, and the whole screen field is rebuilt only on `moveend`.
+
+Three things that a global-field layer gets for free and a 136 km ribbon does
+not, all of which show up as a blank or blotchy screen if missed:
+
+- The search radius has to grow with the screen cell size, or a swath thinner
+  than one cell falls through the gaps when you zoom out.
+- Only the along-track direction may be decimated. Striding the 69-sample
+  cross-track axis by the same factor collapses the swath onto its left edge as
+  soon as the stride passes 69.
+- Particles have to be counted and respawned from the field cells that hold
+  data. Seeding uniformly across the viewport drops almost all of them on empty
+  water, where they die on their first step.
+
+Speeds are absolute geostrophic velocity (`ugos_filtered`, `vgos_filtered` —
+anomaly plus MDT, so the mean flow is included). Near the equator the Coriolis
+parameter goes to zero and the geostrophic derivation inflates; the page says so
+next to the map rather than quietly clipping it.
+
 ## zarr-gl/
 
 A from-scratch WebGL2 Leaflet layer, built because `L.GridLayer`'s per-tile
