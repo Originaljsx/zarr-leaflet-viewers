@@ -844,8 +844,7 @@ async function loadCube(bounds) {
   const thr = el('cube-threshold')
   thr.min = Math.min(0, full[0]); thr.max = full[1]
   thr.step = Math.max(0.0005, (full[1] - Math.min(0, full[0])) / 200)
-  thr.value = thr.min
-  el('cube-thval').textContent = 'off'
+  thresholdOff()
 
   const km = (nc * spectraGrid.resX * 111.32 * Math.cos(bounds.getCenter().lat * Math.PI / 180)).toFixed(1)
   const mb = (data.length * 4 / 1e6).toFixed(0)
@@ -983,7 +982,9 @@ el('cube-mode').onchange = () => {
   el('cube-density-row').style.display = mode === 'composite' ? 'block' : 'none'
   // Clipping cuts the ray-marched box; the slice planes are their own geometry.
   el('cube-clip-rows').style.display = mode === 'slices' ? 'none' : 'block'
-  if (mode === 'slices') stopScrub()
+  // A threshold that was hiding weak samples along a ray punches holes straight
+  // through a slice plane, so slicing starts from the whole plane.
+  if (mode === 'slices') { stopScrub(); thresholdOff() }
 }
 el('cube-opacity').oninput = () => {
   const v = parseFloat(el('cube-opacity').value)
@@ -994,6 +995,12 @@ el('cube-density').oninput = () => {
   const v = parseFloat(el('cube-density').value)
   el('cube-dval').textContent = v.toFixed(2)
   cube?.setStyle({ density: v })
+}
+function thresholdOff() {
+  const thr = el('cube-threshold')
+  thr.value = thr.min
+  el('cube-thval').textContent = 'off'
+  cube?.setStyle({ threshold: -Infinity })
 }
 el('cube-threshold').oninput = () => {
   const v = parseFloat(el('cube-threshold').value)
