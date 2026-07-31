@@ -285,7 +285,13 @@ export class ZarrSource {
     // A projected (metre) grid never wraps: its axis is a bounded span, not a
     // 360-degree circle, so `fullWidth` and the antimeridian split below are
     // gated off and columns are simply clamped to the data instead.
-    const fullWidth = this.geographic && lonEast - lonWest >= 360 - lon.step
+    //
+    // Nor does a *regional* lon/lat grid -- an EMIT scene is 1.28 degrees wide,
+    // and taking its columns modulo `lon.size` would answer a window 5 degrees
+    // away with the scene's own pixels, painting copies of it across the map.
+    // Only a grid that actually closes on itself gets the wrap.
+    const wraps = this.geographic && lon.size * Math.abs(lon.step) >= 360 - Math.abs(lon.step)
+    const fullWidth = wraps && lonEast - lonWest >= 360 - lon.step
 
     const colOf = (value) => (value - lon.min) / lon.step
     const rowOf = (value) =>
@@ -299,15 +305,15 @@ export class ZarrSource {
     const endRow = Math.min(lat.size, Math.ceil(rowOf(latHigh)))
     if (endRow <= startRow) return null
 
-    // Column ranges. A geographic grid wraps across the antimeridian; a
-    // projected grid clamps to [0, size) with no wrap (the window may fall
+    // Column ranges. A global geographic grid wraps across the antimeridian;
+    // anything else clamps to [0, size) with no wrap (the window may fall
     // partly, or wholly, outside the data).
     const ranges = []
     let firstCol
     if (fullWidth) {
       ranges.push([0, lon.size])
       firstCol = 0
-    } else if (!this.geographic) {
+    } else if (!wraps) {
       const a = Math.max(0, Math.min(lon.size, startCol))
       const b = Math.max(0, Math.min(lon.size, endCol))
       if (b <= a) return null
@@ -355,12 +361,12 @@ export class ZarrSource {
 
     const stepLon = lon.step
     const stepLat = lat.step
-    // Geographic non-wrapped windows anchor on the unclamped `startCol` (the
-    // shader folds longitude); a projected window anchors on the clamped
-    // `firstCol` so the texture lands where the data actually starts.
+    // A wrapped window anchors on the unclamped `startCol`, since the shader
+    // folds longitude back into it; a clamped window anchors on `firstCol` so
+    // the texture lands where the data actually starts.
     const windowWest = fullWidth
       ? lon.min
-      : lon.min + (this.geographic ? startCol : firstCol) * lon.step
+      : lon.min + (wraps ? startCol : firstCol) * lon.step
     const rowTop = lat.ascending ? lat.min + startRow * lat.step : lat.max - startRow * lat.step
 
     return {

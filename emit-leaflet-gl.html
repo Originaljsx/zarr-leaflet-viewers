@@ -102,6 +102,9 @@
   <div class="row" style="margin-top:6px;">
     <button type="button" id="autostretch" class="modebtn">Auto stretch (2–98%)</button>
   </div>
+  <label style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+    <input id="autoband" type="checkbox" style="width:auto;" checked /> restretch on every band
+  </label>
 
   <label>data opacity <span id="opval">100%</span>
     <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
@@ -360,6 +363,7 @@ function setBand(i, { fromSlider = false } = {}) {
   if (!fromSlider) el('band').value = bandIdx
   el('bandlabel').innerHTML = bandText(bandIdx)
   layer?.updateSelectors({ wavelength: bandIdx })
+  scheduleStretch()
   updateMeta(); renderSpectra(); updateReadout()
 }
 function nearestBand(nm) {
@@ -397,7 +401,11 @@ el('maskopacity').oninput = () => {
 
 /* ---------- min/max ---------- */
 const cmin = el('cmin'), cmax = el('cmax'), cminNum = el('cminNum'), cmaxNum = el('cmaxNum')
-const STEP = 0.01
+// Slider granularity follows the range: EMIT reflectance percentiles live around
+// 0.005-0.06, where a fixed 0.01 step is a third of the whole spread.
+let STEP = 0.01
+const stepFor = (span) => Math.max(0.0001, Math.round((span / 200) * 10000) / 10000)
+const decimals = () => (STEP >= 0.01 ? 2 : STEP >= 0.001 ? 3 : 4)
 const clampC = (v) => Math.max(CLIM_RANGE[0], Math.min(CLIM_RANGE[1], v))
 function cssGradient(name) {
   const cols = colormapBuilder(name), n = cols.length
@@ -408,7 +416,8 @@ function cssGradient(name) {
 }
 function renderClimUI() {
   const [lo, hi] = clim, span = CLIM_RANGE[1] - CLIM_RANGE[0], fill = el('dualfill')
-  cmin.value = lo; cmax.value = hi; cminNum.value = lo.toFixed(2); cmaxNum.value = hi.toFixed(2)
+  const d = decimals()
+  cmin.value = lo; cmax.value = hi; cminNum.value = lo.toFixed(d); cmaxNum.value = hi.toFixed(d)
   fill.style.left = `${((lo - CLIM_RANGE[0]) / span) * 100}%`
   fill.style.width = `${((hi - lo) / span) * 100}%`
   fill.style.background = cssGradient(el('cmap').value)
@@ -419,8 +428,9 @@ function setClim(lo, hi) {
   clim = [lo, hi]; renderClimUI(); layer?.updateStyle({ clim })
 }
 function initClim() {
+  STEP = stepFor(CLIM_RANGE[1] - CLIM_RANGE[0])
   for (const s of [cmin, cmax]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
-  for (const s of [cminNum, cmaxNum]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1] }
+  for (const s of [cminNum, cmaxNum]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
   renderClimUI()
 }
 cmin.oninput = () => setClim(+cmin.value, +cmax.value)
@@ -428,21 +438,64 @@ cmax.oninput = () => setClim(+cmin.value, +cmax.value)
 cminNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
 cmaxNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
 
+/* Reflectance magnitude is a property of the band, not of the scene: water sits
+ * near 0.02 in the blue, land near 0.4 in the NIR, and the deep water-vapour and
+ * SWIR bands are near zero everywhere. One fixed range therefore renders most of
+ * the 285 bands as flat black or flat white, so the range follows the band. The
+ * *colormap* deliberately does not -- a palette that changed with wavelength
+ * would make two bands incomparable by eye. Percentiles come from the coarsest
+ * level (295 x 239, one chunk), which is a single small read per band. */
+const stretchCache = new Map()
+async function bandStretch(i) {
+  if (stretchCache.has(i)) return stretchCache.get(i)
+  const levels = layer?.source?.levels
+  if (!levels?.length) return null
+  const coarse = levels[levels.length - 1]
+  const chunk = await zarr.get(coarse.array, [i, zarr.slice(null), zarr.slice(null)])
+  const values = Array.from(chunk.data, Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (!values.length) return null
+  const at = (p) => values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))]
+  const range = [Math.max(0, at(0.02)), at(0.98)]
+  stretchCache.set(i, range)
+  return range
+}
+function applyStretch([lo, hi]) {
+  // Bands flagged bad (the deep water-vapour absorptions, 1870 nm and friends)
+  // are a single constant everywhere, so there is no range to stretch to --
+  // keep whatever the last real band set rather than collapsing the ramp.
+  if (hi - lo < 1e-4) return
+  // Retune the slider span to the band, not just widen it: a SWIR band whose
+  // 98th percentile is 0.012 is unadjustable on a 0..1 slider.
+  const top = Math.max(0.02, Math.ceil(hi * 1.6 * 1000) / 1000)
+  CLIM_RANGE = [Math.min(0, Math.floor(lo * 1000) / 1000), top]
+  initClim()
+  setClim(lo, hi)
+}
+
 el('autostretch').onclick = async () => {
-  if (!layer?.source?.levels?.length) return
   const btn = el('autostretch'); const old = btn.textContent
   btn.textContent = 'reading…'; btn.disabled = true
   try {
-    const levels = layer.source.levels
-    const coarse = levels[levels.length - 1]
-    const chunk = await zarr.get(coarse.array, [bandIdx, zarr.slice(null), zarr.slice(null)])
-    const values = Array.from(chunk.data, Number).filter(Number.isFinite).sort((a, b) => a - b)
-    if (values.length) {
-      const at = (p) => values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))]
-      setClim(Math.max(0, at(0.02)), at(0.98))
-    }
+    const range = await bandStretch(bandIdx)
+    if (range) applyStretch(range)
   } catch (err) { console.error(err) } finally { btn.textContent = old; btn.disabled = false }
 }
+
+// Dragging the band slider fires continuously; only the band it settles on is
+// worth a read, and only if it is still the current one when the read lands.
+let stretchTimer = null
+function scheduleStretch() {
+  if (!el('autoband').checked) return
+  clearTimeout(stretchTimer)
+  stretchTimer = setTimeout(async () => {
+    const want = bandIdx
+    try {
+      const range = await bandStretch(want)
+      if (range && want === bandIdx && el('autoband').checked) applyStretch(range)
+    } catch (err) { console.error(err) }
+  }, stretchCache.has(bandIdx) ? 0 : 120)
+}
+el('autoband').onchange = scheduleStretch
 
 /* ---------- spectrum panel ---------- */
 const TRACE_COLORS = ['#60a5fa', '#f4a582', '#a3e635']
@@ -577,7 +630,16 @@ for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
       : Math.min(wavelengths.length - 1, +(params.get('band') ?? nearestBand(865)))
     el('band').value = bandIdx
     el('bandlabel').innerHTML = bandText(bandIdx)
+    // An explicit ?clim=lo,hi is a deliberate choice, so it turns the per-band
+    // restretch off rather than being overwritten by it a moment later.
+    const asked = (params.get('clim') ?? '').split(',').map(Number)
+    if (asked.length === 2 && asked.every(Number.isFinite) && asked[1] > asked[0]) {
+      CLIM_RANGE = [Math.min(0, asked[0]), Math.max(CLIM_RANGE[1], asked[1])]
+      clim = asked
+      el('autoband').checked = false
+    }
     initClim(); setBasemap(); buildLayer()
+    scheduleStretch()
   } catch (err) {
     metaEl.textContent = 'failed to open store'
     warnEl.innerHTML = `${String(err.message ?? err)}<br><br>` +
