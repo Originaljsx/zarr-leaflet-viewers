@@ -1,0 +1,597 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>EMIT L2A hyperspectral (285 bands) — Leaflet + WebGL</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; background: #05070d; }
+  #map { position: absolute; inset: 0; background: #05070d; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.78); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 272px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel select, #panel input[type=number] { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row label { flex: 1; }
+  #meta { margin-top: 6px; color: #aaa; min-height: 1em; line-height: 1.45; }
+  #warn { margin-top: 4px; color: #fc6; min-height: 0; }
+  #warn:empty { display: none; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 1em; }
+  #bandlabel { color: #9fd; }
+  #bandlabel .flagged { color: #fc6; }
+  .modebtn {
+    flex: 1; padding: 4px 0; font: inherit; font-size: 12px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+  .modebtn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  input[type=range] { width: 100%; }
+  .dual { position: relative; height: 30px; margin-top: 4px; }
+  .dual input[type=range] {
+    position: absolute; left: 0; top: 8px; margin: 0; width: 100%;
+    -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+  }
+  .dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    height: 14px; width: 14px; border-radius: 50%; background: #2563eb;
+    border: 2px solid #fff; cursor: pointer; margin-top: 0;
+  }
+  .dual input[type=range]::-moz-range-thumb {
+    pointer-events: auto; height: 14px; width: 14px; border-radius: 50%;
+    background: #2563eb; border: 2px solid #fff; cursor: pointer;
+  }
+  .dual .track { position: absolute; left: 0; right: 0; top: 13px; height: 4px;
+    background: #444; border-radius: 2px; }
+  .dual .fill { position: absolute; top: 13px; height: 4px; background: #2563eb;
+    border-radius: 2px; }
+  fieldset { border: 1px solid #333; border-radius: 4px; margin: 10px 0 0; padding: 6px 8px 8px; }
+  legend { color: #9aa; font-size: 11px; padding: 0 4px; }
+  /* spectrum panel */
+  #spectrum {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: min(78%, 920px); z-index: 1000;
+    background: rgba(0,0,0,.78); border-radius: 6px; padding: 8px 10px 6px;
+    color: #ccc; font-size: 11px;
+  }
+  #sp-plot { width: 100%; height: 150px; }
+  #sp-plot svg { width: 100%; height: 100%; display: block; }
+  #sp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #sp-stats { color: #9fd; }
+  #sp-hint { color: #777; font-size: 10px; }
+  #sp-traces { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .sp-chip { padding: 1px 5px; border-radius: 3px; background: #262626; }
+  #sp-py { white-space: pre; color: #7c9; font-size: 10px; margin-top: 5px;
+    max-height: 0; overflow: hidden; transition: max-height .15s; }
+  #sp-py.open { max-height: 130px; overflow: auto; }
+  .smallbtn {
+    padding: 2px 7px; font: inherit; font-size: 10px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>EMIT L2A surface reflectance</b>
+  <div id="meta">loading store…</div>
+  <div id="warn"></div>
+
+  <label>band <span id="bandlabel"></span>
+    <input id="band" type="range" min="0" max="0" step="1" value="0" />
+  </label>
+  <label>preset
+    <select id="preset"></select>
+  </label>
+
+  <label>colormap
+    <select id="cmap"></select>
+  </label>
+
+  <label>reflectance range</label>
+  <div class="row">
+    <label>min <input id="cminNum" type="number" step="0.01" /></label>
+    <label>max <input id="cmaxNum" type="number" step="0.01" /></label>
+  </div>
+  <div class="dual" id="dual">
+    <div class="track"></div><div class="fill" id="dualfill"></div>
+    <input id="cmin" type="range" />
+    <input id="cmax" type="range" />
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button type="button" id="autostretch" class="modebtn">Auto stretch (2–98%)</button>
+  </div>
+
+  <label>data opacity <span id="opval">100%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
+  </label>
+
+  <fieldset>
+    <legend>L2A mask overlay</legend>
+    <select id="maskband"></select>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+      <input id="maskon" type="checkbox" style="width:auto;" /> show
+    </label>
+    <label>mask opacity <span id="maskopval">60%</span>
+      <input id="maskopacity" type="range" min="0" max="1" step="0.05" value="0.6" />
+    </label>
+  </fieldset>
+
+  <label>basemap
+    <select id="basemap"></select>
+  </label>
+
+  <div id="readout">click the scene for a spectrum</div>
+</div>
+
+<div id="spectrum">
+  <div id="sp-head">
+    <span id="sp-stats">no spectrum yet</span>
+    <span>
+      <button type="button" id="sp-py-btn" class="smallbtn">python</button>
+      <button type="button" id="sp-clear" class="smallbtn">clear</button>
+    </span>
+  </div>
+  <div id="sp-plot"></div>
+  <div id="sp-traces"></div>
+  <div id="sp-label" style="display:flex;justify-content:space-between;margin-top:3px;">
+    <span id="sp-hint">click adds a trace (3 kept) &nbsp;·&nbsp; &#8592; &#8594; change band</span>
+  </div>
+  <div id="sp-py"></div>
+</div>
+
+<script type="importmap">{"imports":{
+  "leaflet":"https://esm.sh/leaflet@1.9.4",
+  "zarrita":"https://esm.sh/zarrita@0.7.3",
+  "icechunk-js":"https://esm.sh/icechunk-js@0.6.0"
+}}</script>
+<script type="module">
+import L from 'leaflet'
+// ?v= cache-buster: python http.server serves modules cacheable, so a bare
+// refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
+import { colormapBuilder } from './zarr-maps/index.js?v=3'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
+import * as zarr from 'zarrita'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+const el = (id) => document.getElementById(id)
+
+/* ---------- config ----------
+   The store is an Icechunk repo read straight off CloudFront by icechunk-js,
+   the same path arctic-leaflet-gl.html uses. Level 0 is EMIT's own
+   orthorectified grid (0.00054223 deg, ~60 m) built from the granule's GLT --
+   delivered posting, values copied not interpolated. */
+const params = new URLSearchParams(location.search)
+const REMOTE_STORE =
+  'https://d1ef9node0gwi2.cloudfront.net/ice/emit_20250327_rfl_60m.icechunk'
+const LOCAL_STORE = './emit_20250327_rfl_60m.icechunk'
+// zarrita's FetchStore and icechunk-js both build a `new URL(...)`, which throws
+// on a relative path, so absolutise before anything sees it.
+const abs = (u) => new URL(u, location.href).href
+const CANDIDATES = params.get('store')
+  ? [abs(params.get('store'))]
+  : [abs(LOCAL_STORE), REMOTE_STORE]
+let source = CANDIDATES[0]
+
+const COLORMAP_NAMES = ['viridis', 'magma', 'inferno', 'plasma', 'cividis', 'turbo',
+  'Greys', 'Greys_r', 'bone', 'RdBu', 'RdBu_r', 'Spectral', 'YlGnBu', 'YlOrRd']
+// Wavelengths worth a shortcut for a coastal scene: the ocean-colour bands,
+// the red edge, NIR, and the two SWIR windows.
+const PRESETS = [
+  ['coastal 443 nm', 443], ['blue 490 nm', 490], ['green 560 nm', 560],
+  ['red 665 nm', 665], ['red edge 705 nm', 705], ['NIR 865 nm', 865],
+  ['water vapour 945 nm', 945], ['cirrus 1380 nm', 1380],
+  ['SWIR 1610 nm', 1610], ['SWIR 2200 nm', 2200],
+]
+let CLIM_RANGE = [0, 1.0]
+let clim = [0, 0.5]
+
+const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
+
+/* ---------- map + basemaps (Mercator: zarr-gl inverts per fragment) ---------- */
+const map = L.map('map', { center: [34.36, -76.33], zoom: 9, maxZoom: 15, minZoom: 2 })
+const BASEMAPS = {
+  imagery: { label: 'Esri World Imagery', build: () => L.tileLayer(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 17, attribution: 'Esri, Maxar, Earthstar Geographics' }) },
+  dark: { label: 'CARTO dark', build: () => L.tileLayer(
+    'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    { maxZoom: 15, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }) },
+  osm: { label: 'OpenStreetMap', build: () => L.tileLayer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 17, attribution: '&copy; OpenStreetMap contributors' }) },
+  none: { label: 'None (dark)', build: () => null },
+}
+for (const [k, v] of Object.entries(BASEMAPS)) el('basemap').add(new Option(v.label, k))
+let baseKey = params.get('basemap') in BASEMAPS ? params.get('basemap') : 'imagery'
+el('basemap').value = baseKey
+let baseLayer = null
+function setBasemap() {
+  if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null }
+  baseLayer = BASEMAPS[baseKey].build()
+  if (baseLayer) { baseLayer.addTo(map); baseLayer.bringToBack() }
+}
+el('basemap').onchange = () => { baseKey = el('basemap').value; setBasemap() }
+
+/* ---------- store metadata + spectra side channel ---------- */
+let VAR = 'reflectance'
+let wavelengths = [], goodBands = [], maskBands = [], bandIdx = 0, sceneDate = ''
+let spectraArr = null, spectraGrid = null
+let root = null
+
+async function openRoot(url) {
+  if (/\.icechunk(\/|$|\?|#)/.test(url)) {
+    const { IcechunkStore } = await import('icechunk-js')
+    return zarr.root(await IcechunkStore.open(url))
+  }
+  return zarr.root(new zarr.FetchStore(url))
+}
+
+/** First candidate whose root metadata answers. */
+async function resolveStore() {
+  const tried = []
+  for (const url of CANDIDATES) {
+    try {
+      const candidate = await openRoot(url)
+      await zarr.open(candidate, { kind: 'group' })
+      root = candidate
+      return url
+    } catch (err) {
+      tried.push(`${url} -> ${err.message}`)
+    }
+  }
+  throw new Error(`no store found. Tried: ${tried.join(' | ')}`)
+}
+
+async function loadMetadata() {
+  const group = await zarr.open(root, { kind: 'group' })
+  const attrs = group.attrs ?? {}
+  VAR = params.get('var') ?? attrs.variable ?? 'reflectance'
+  wavelengths = attrs.wavelengths_nm ?? []
+  goodBands = attrs.good_wavelengths ?? wavelengths.map(() => 1)
+  maskBands = attrs.mask_bands ?? []
+  sceneDate = String(attrs.time_coverage_start ?? '').slice(0, 10)
+
+  // `zarr-layer` carries the store's own default colour limits, as the SWOT
+  // pyramids in this bucket do.
+  const defaults = attrs['zarr-layer']?.[VAR]
+  if (Array.isArray(defaults?.clim) && defaults.clim[1] > defaults.clim[0]) {
+    clim = [...defaults.clim]
+    CLIM_RANGE = [0, Math.max(1.0, Math.ceil(defaults.clim[1] * 2 * 10) / 10)]
+  }
+
+  // spatial:bbox -> initial view.
+  const bbox = attrs['spatial:bbox']
+  if (Array.isArray(bbox) && bbox.length === 4) {
+    map.fitBounds([[bbox[1], bbox[0]], [bbox[3], bbox[2]]], { padding: [40, 40] })
+  }
+
+  if (attrs.spectra_group) await loadSpectra(attrs.spectra_group, attrs)
+}
+
+async function loadSpectra(groupPath, rootAttrs) {
+  try {
+    spectraArr = await zarr.open(await root.resolve(`${groupPath}/${VAR}`), { kind: 'array' })
+    // [xres, 0, xorigin, 0, yres, yorigin] on cell edges (zarr-conventions spatial v1).
+    const tf = rootAttrs['spatial:transform']
+    const [, ny, nx] = spectraArr.shape
+    spectraGrid = { left: tf[2], resX: tf[0], top: tf[5], resY: Math.abs(tf[4]), ny, nx }
+  } catch (err) {
+    console.warn('no spectra group; click readout unavailable', err)
+    spectraArr = null
+  }
+}
+
+const clampI = (v, hi) => Math.min(hi, Math.max(0, Math.round(v)))
+
+/** Full spectrum at a click: one chunk of the spectral-major native array. */
+async function readSpectrum(latlng) {
+  if (!spectraArr) return null
+  const { left, resX, top, resY, ny, nx } = spectraGrid
+  const col = clampI((latlng.lng - left) / resX - 0.5, nx - 1)
+  const row = clampI((top - latlng.lat) / resY - 0.5, ny - 1)
+  const inside = latlng.lng >= left && latlng.lng <= left + resX * nx &&
+    latlng.lat <= top && latlng.lat >= top - resY * ny
+  if (!inside) return null
+  const out = await zarr.get(spectraArr, [zarr.slice(null), row, col])
+  return { values: Array.from(out.data, Number), row, col }
+}
+
+/* ---------- data layers ---------- */
+let layer = null, maskLayer = null
+function buildLayer() {
+  layer = new ZarrGLLayer({
+    url: source, variable: VAR, tileSize: 512, maxZoom: 15,
+    clim, colors: colormapBuilder(el('cmap').value),
+    opacity: parseFloat(el('opacity').value),
+    selectors: { wavelength: bandIdx },
+  }).addTo(map)
+  layer.readyPromise.then(updateMeta, (err) => {
+    warnEl.textContent = 'layer load error (see console)'; console.error(err)
+  })
+}
+function rebuildMaskLayer() {
+  if (maskLayer) { map.removeLayer(maskLayer); maskLayer = null }
+  if (!el('maskon').checked || !maskBands.length) return
+  maskLayer = new ZarrGLLayer({
+    url: source, variable: 'mask', tileSize: 512, maxZoom: 15,
+    clim: [0, 1], colors: colormapBuilder('YlOrRd'),
+    opacity: parseFloat(el('maskopacity').value),
+    selectors: { mask_band: +el('maskband').value },
+  }).addTo(map)
+  maskLayer.readyPromise.catch((err) => console.error('mask layer:', err))
+}
+
+/** What the layer is drawing now: level 0 is EMIT's delivered ~60 m grid. */
+function currentLevelInfo() {
+  const bounds = map.getBounds()
+  const degPerPx = (bounds.getEast() - bounds.getWest()) / map.getSize().x
+  const level = layer?.source?.chooseLevel?.(degPerPx)
+  if (!level) return { degPerPx, text: '—' }
+  const metres = level.lon.step * 111320 * Math.cos((map.getCenter().lat * Math.PI) / 180)
+  const state = degPerPx < level.lon.step ? 'upsampled'
+    : degPerPx > level.lon.step * 1.5 ? 'downsampled' : '1:1'
+  return { degPerPx, text: `level ${level.path} (~${metres.toFixed(0)} m) · ${state}` }
+}
+function updateMeta() {
+  const levels = layer?.source?.levels?.length ?? 0
+  const info = currentLevelInfo()
+  metaEl.innerHTML =
+    `${VAR} · ${wavelengths.length} bands · ${sceneDate}<br>` +
+    `EPSG:4326 · ${levels} levels · ${info.text}`
+  metaEl.title =
+    'Level 0 is the granule’s own orthorectified grid (0.00054223 deg, ~60 m), ' +
+    'built from EMIT’s GLT: values are copied from the swath, never interpolated. ' +
+    'Coarser levels are NaN-aware 2x2 means. Clicked spectra come from a ' +
+    'spectral-major copy of the same grid.'
+}
+map.on('zoomend', updateMeta)
+
+/* ---------- band control ---------- */
+function bandText(i) {
+  const nm = wavelengths[i]
+  const flagged = goodBands[i] === 0 ? ' <span class="flagged">(flagged)</span>' : ''
+  return nm === undefined ? '' : `${nm.toFixed(1)} nm · idx ${i}${flagged}`
+}
+function setBand(i, { fromSlider = false } = {}) {
+  bandIdx = Math.min(wavelengths.length - 1, Math.max(0, i))
+  if (!fromSlider) el('band').value = bandIdx
+  el('bandlabel').innerHTML = bandText(bandIdx)
+  layer?.updateSelectors({ wavelength: bandIdx })
+  updateMeta(); renderSpectra(); updateReadout()
+}
+function nearestBand(nm) {
+  let best = 0, bestD = Infinity
+  wavelengths.forEach((w, i) => { const d = Math.abs(w - nm); if (d < bestD) { bestD = d; best = i } })
+  return best
+}
+el('band').oninput = () => setBand(+el('band').value, { fromSlider: true })
+el('preset').onchange = () => {
+  const nm = parseFloat(el('preset').value)
+  if (Number.isFinite(nm)) setBand(nearestBand(nm))
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+  setBand(bandIdx + (e.key === 'ArrowRight' ? 1 : -1))
+})
+
+/* ---------- colormap / opacity / mask ---------- */
+el('cmap').onchange = () => { layer?.updateStyle({ colors: colormapBuilder(el('cmap').value) }); renderClimUI() }
+el('opacity').oninput = () => {
+  el('opval').textContent = `${Math.round(parseFloat(el('opacity').value) * 100)}%`
+  layer?.updateStyle({ opacity: parseFloat(el('opacity').value) })
+}
+el('maskon').onchange = rebuildMaskLayer
+el('maskband').onchange = () => {
+  if (maskLayer) maskLayer.updateSelectors({ mask_band: +el('maskband').value })
+}
+el('maskopacity').oninput = () => {
+  el('maskopval').textContent = `${Math.round(parseFloat(el('maskopacity').value) * 100)}%`
+  maskLayer?.updateStyle({ opacity: parseFloat(el('maskopacity').value) })
+}
+
+/* ---------- min/max ---------- */
+const cmin = el('cmin'), cmax = el('cmax'), cminNum = el('cminNum'), cmaxNum = el('cmaxNum')
+const STEP = 0.01
+const clampC = (v) => Math.max(CLIM_RANGE[0], Math.min(CLIM_RANGE[1], v))
+function cssGradient(name) {
+  const cols = colormapBuilder(name), n = cols.length
+  return `linear-gradient(to right, ${cols.map((c, i) => {
+    const s = (c[0] <= 1 && c[1] <= 1 && c[2] <= 1) ? 255 : 1
+    return `rgb(${Math.round(c[0] * s)},${Math.round(c[1] * s)},${Math.round(c[2] * s)}) ${(i / (n - 1) * 100).toFixed(1)}%`
+  }).join(',')})`
+}
+function renderClimUI() {
+  const [lo, hi] = clim, span = CLIM_RANGE[1] - CLIM_RANGE[0], fill = el('dualfill')
+  cmin.value = lo; cmax.value = hi; cminNum.value = lo.toFixed(2); cmaxNum.value = hi.toFixed(2)
+  fill.style.left = `${((lo - CLIM_RANGE[0]) / span) * 100}%`
+  fill.style.width = `${((hi - lo) / span) * 100}%`
+  fill.style.background = cssGradient(el('cmap').value)
+}
+function setClim(lo, hi) {
+  lo = clampC(lo); hi = clampC(hi)
+  if (lo > hi) [lo, hi] = [hi, lo]
+  clim = [lo, hi]; renderClimUI(); layer?.updateStyle({ clim })
+}
+function initClim() {
+  for (const s of [cmin, cmax]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
+  for (const s of [cminNum, cmaxNum]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1] }
+  renderClimUI()
+}
+cmin.oninput = () => setClim(+cmin.value, +cmax.value)
+cmax.oninput = () => setClim(+cmin.value, +cmax.value)
+cminNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+cmaxNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+
+el('autostretch').onclick = async () => {
+  if (!layer?.source?.levels?.length) return
+  const btn = el('autostretch'); const old = btn.textContent
+  btn.textContent = 'reading…'; btn.disabled = true
+  try {
+    const levels = layer.source.levels
+    const coarse = levels[levels.length - 1]
+    const chunk = await zarr.get(coarse.array, [bandIdx, zarr.slice(null), zarr.slice(null)])
+    const values = Array.from(chunk.data, Number).filter(Number.isFinite).sort((a, b) => a - b)
+    if (values.length) {
+      const at = (p) => values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))]
+      setClim(Math.max(0, at(0.02)), at(0.98))
+    }
+  } catch (err) { console.error(err) } finally { btn.textContent = old; btn.disabled = false }
+}
+
+/* ---------- spectrum panel ---------- */
+const TRACE_COLORS = ['#60a5fa', '#f4a582', '#a3e635']
+let traces = []
+let clickSeq = 0
+
+function renderSpectra() {
+  const box = el('sp-plot')
+  if (!traces.length) { box.innerHTML = ''; el('sp-traces').innerHTML = ''; return }
+  const W = 900, H = 150, padL = 42, padR = 8, padT = 8, padB = 20
+  const finite = traces.flatMap((t) => t.values.filter(Number.isFinite))
+  const lo = Math.min(...finite), hi = Math.max(...finite)
+  const span = (hi - lo) || 1
+  const wl0 = wavelengths[0], wl1 = wavelengths[wavelengths.length - 1]
+  const X = (nm) => padL + (nm - wl0) / (wl1 - wl0) * (W - padL - padR)
+  const Y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / span)
+
+  const paths = traces.map((t, ti) => {
+    let d = '', pen = false
+    t.values.forEach((v, i) => {
+      if (Number.isFinite(v)) { d += `${pen ? 'L' : 'M'}${X(wavelengths[i]).toFixed(1)} ${Y(v).toFixed(1)} `; pen = true }
+      else pen = false
+    })
+    return `<path d="${d}" fill="none" stroke="${TRACE_COLORS[ti % TRACE_COLORS.length]}" stroke-width="1.3"/>`
+  }).join('')
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + f * span)
+  const grid = yTicks.map((v) =>
+    `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${W - padR}" y2="${Y(v).toFixed(1)}" stroke="#334" stroke-width="0.5"/>` +
+    `<text x="${padL - 4}" y="${(Y(v) + 3).toFixed(1)}" fill="#889" font-size="9" text-anchor="end">${v.toFixed(2)}</text>`
+  ).join('')
+  const xTicks = [500, 1000, 1500, 2000, 2500].filter((nm) => nm >= wl0 && nm <= wl1)
+  const xAxis = xTicks.map((nm) =>
+    `<line x1="${X(nm).toFixed(1)}" y1="${padT}" x2="${X(nm).toFixed(1)}" y2="${H - padB}" stroke="#243" stroke-width="0.5" stroke-dasharray="2 3"/>` +
+    `<text x="${X(nm).toFixed(1)}" y="${H - padB + 12}" fill="#889" font-size="9" text-anchor="middle">${nm}</text>`
+  ).join('')
+
+  let flagged = ''
+  for (let i = 0; i < goodBands.length; i++) {
+    if (goodBands[i] === 0) {
+      flagged += `<rect x="${X(wavelengths[i]).toFixed(1)}" y="${H - padB - 3}" width="1.4" height="3" fill="#fc6" opacity="0.7"/>`
+    }
+  }
+  const cur = wavelengths[bandIdx]
+  const marker = Number.isFinite(cur)
+    ? `<line x1="${X(cur).toFixed(1)}" y1="${padT}" x2="${X(cur).toFixed(1)}" y2="${H - padB}" stroke="#fd9" stroke-width="1"/>` +
+      traces.map((t, ti) => Number.isFinite(t.values[bandIdx])
+        ? `<circle cx="${X(cur).toFixed(1)}" cy="${Y(t.values[bandIdx]).toFixed(1)}" r="2.6" fill="${TRACE_COLORS[ti % TRACE_COLORS.length]}"/>`
+        : '').join('')
+    : ''
+
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `${grid}${xAxis}${flagged}${paths}${marker}` +
+    `<text x="${W - padR}" y="${H - padB + 12}" fill="#667" font-size="9" text-anchor="end">wavelength (nm)</text></svg>`
+
+  el('sp-traces').innerHTML = traces.map((t, ti) =>
+    `<span class="sp-chip" style="color:${TRACE_COLORS[ti % TRACE_COLORS.length]}">` +
+    `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)} · px ${t.col},${t.row}</span>`).join('')
+
+  const last = traces[traces.length - 1]
+  const lastFinite = last.values.filter(Number.isFinite)
+  el('sp-stats').textContent = lastFinite.length
+    ? `${lastFinite.length}/${last.values.length} bands · min ${Math.min(...lastFinite).toFixed(3)}` +
+      ` · max ${Math.max(...lastFinite).toFixed(3)}` +
+      ` · at ${cur?.toFixed(1)} nm: ${Number.isFinite(last.values[bandIdx]) ? last.values[bandIdx].toFixed(4) : 'no data'}`
+    : 'no data at that pixel'
+}
+
+function pythonSnippet() {
+  const t = traces[traces.length - 1]
+  if (!t) return ''
+  return `import icechunk, xarray as xr\n` +
+    `repo = icechunk.Repository.open(icechunk.s3_storage(\n` +
+    `    bucket="swot-zarr", prefix="ice/emit_20250327_rfl_60m.icechunk",\n` +
+    `    region="us-west-2", from_env=True))\n` +
+    `store = repo.readonly_session("main").store\n` +
+    `viz  = xr.open_zarr(store, group="0", consolidated=False)["${VAR}"]   # ~60 m, band-major\n` +
+    `spec = xr.open_zarr(store, group="spectra", consolidated=False)["${VAR}"]\n` +
+    `spec.isel(latitude=${t.row}, longitude=${t.col}).plot()   # ${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}`
+}
+
+function updateReadout() {
+  const t = traces[traces.length - 1]
+  if (!t) return
+  const v = t.values[bandIdx]
+  readoutEl.textContent = `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}: ` +
+    (Number.isFinite(v) ? `${v.toFixed(4)} @ ${wavelengths[bandIdx].toFixed(1)} nm` : 'no data')
+}
+
+map.on('click', async (e) => {
+  const where = `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
+  const seq = ++clickSeq
+  readoutEl.textContent = `${where}: reading spectrum…`
+  try {
+    const result = await readSpectrum(e.latlng)
+    if (seq !== clickSeq) return
+    if (!result) { readoutEl.textContent = `${where}: outside the scene`; return }
+    if (!result.values.some(Number.isFinite)) {
+      readoutEl.textContent = `${where}: no data at that pixel`; return
+    }
+    traces.push({ lat: e.latlng.lat, lon: e.latlng.lng, ...result })
+    if (traces.length > TRACE_COLORS.length) traces.shift()
+    renderSpectra(); updateReadout()
+    if (el('sp-py').classList.contains('open')) el('sp-py').textContent = pythonSnippet()
+  } catch (err) {
+    console.error(err)
+    if (seq === clickSeq) readoutEl.textContent = `${where}: spectrum failed (see console)`
+  }
+})
+
+el('sp-clear').onclick = () => { traces = []; renderSpectra(); el('sp-stats').textContent = 'no spectrum yet' }
+el('sp-py-btn').onclick = () => {
+  const box = el('sp-py')
+  box.classList.toggle('open')
+  box.textContent = box.classList.contains('open') ? pythonSnippet() : ''
+}
+
+/* ---------- boot ---------- */
+for (const name of COLORMAP_NAMES) el('cmap').add(new Option(name, name))
+el('cmap').value = params.get('cmap') ?? 'viridis'
+el('preset').add(new Option('—', ''))
+for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
+
+;(async () => {
+  try {
+    source = await resolveStore()
+    await loadMetadata()
+    el('band').max = Math.max(0, wavelengths.length - 1)
+    for (let i = 0; i < maskBands.length; i++) el('maskband').add(new Option(maskBands[i], i))
+    const startNm = parseFloat(params.get('nm') ?? '')
+    bandIdx = Number.isFinite(startNm) ? nearestBand(startNm)
+      : Math.min(wavelengths.length - 1, +(params.get('band') ?? nearestBand(865)))
+    el('band').value = bandIdx
+    el('bandlabel').innerHTML = bandText(bandIdx)
+    initClim(); setBasemap(); buildLayer()
+  } catch (err) {
+    metaEl.textContent = 'failed to open store'
+    warnEl.innerHTML = `${String(err.message ?? err)}<br><br>` +
+      'The Icechunk store is served from CloudFront; pass <code>?store=&lt;url&gt;</code> ' +
+      'to read another copy.'
+    console.error(err)
+  }
+})()
+
+window.__emit = { get layer() { return layer }, get maskLayer() { return maskLayer },
+  get map() { return map }, get source() { return source },
+  get wavelengths() { return wavelengths }, get traces() { return traces },
+  get bandIdx() { return bandIdx } }
+window.__leafletMap = map
+</script>
+</body>
+</html>
