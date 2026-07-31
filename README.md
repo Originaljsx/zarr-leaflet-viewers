@@ -99,6 +99,18 @@ not, all of which show up as a blank or blotchy screen if missed:
   data. Seeding uniformly across the viewport drops almost all of them on empty
   water, where they die on their first step.
 
+Zoom is handled by splitting the two halves apart. Leaflet 1.x does not scale
+the map pane during a zoom — it hands each layer the target zoom and centre in
+`zoomanim` and expects the layer to transform itself — so a layer that ignores
+the event sits at its old scale and position until `zoomend` and then jumps.
+The raster now rides that animation like a tile layer does (`_animateZoom`, plus
+the `leaflet-zoom-animated` class for `transform-origin: 0 0` and the
+transition), so the swath glides and stretches with the basemap. The particles
+cannot follow — their velocity field is baked in screen space for one zoom
+level — so they are frozen for the ~250 ms of the animation and reseeded once
+it lands. The rebuild itself is coalesced onto a frame, because `zoomend` and
+`moveend` both fire and each rebuild is a full pass over the screen field.
+
 Speeds are absolute geostrophic velocity (`ugos_filtered`, `vgos_filtered` —
 anomaly plus MDT, so the mean flow is included). Near the equator the Coriolis
 parameter goes to zero and the geostrophic derivation inflates; the page says so

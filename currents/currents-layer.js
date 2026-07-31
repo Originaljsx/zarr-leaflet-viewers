@@ -276,14 +276,21 @@ export const CurrentLayer = L.Layer.extend({
     this._liveCells = null
     this._raf = null
     this._paused = false
+    this._zooming = false
+    this._resetPending = false
     this._rasterOpacity = options?.rasterOpacity ?? 0.75
   },
 
   onAdd(map) {
     this._map = map
 
+    // `leaflet-zoom-animated` is what opts these canvases into the same zoom
+    // animation the tile layers get: Leaflet's stylesheet gives the class
+    // `transform-origin: 0 0` and, while a zoom is running, a transition on
+    // `transform`. Without it `_animateZoom` below would scale about the
+    // canvas centre and jump instead of glide.
     const mk = (cls) => {
-      const c = L.DomUtil.create('canvas', cls)
+      const c = L.DomUtil.create('canvas', cls + ' leaflet-zoom-animated')
       c.style.position = 'absolute'
       c.style.pointerEvents = 'none'
       this.getPane().appendChild(c)
@@ -305,8 +312,10 @@ export const CurrentLayer = L.Layer.extend({
     this._buf = document.createElement('canvas')
     this._bctx = this._buf.getContext('2d')
 
-    map.on('moveend zoomend resize', this._reset, this)
-    map.on('movestart zoomstart', this._hide, this)
+    map.on('moveend zoomend resize', this._scheduleReset, this)
+    map.on('movestart', this._hide, this)
+    map.on('zoomstart', this._zoomStart, this)
+    map.on('zoomanim', this._animateZoom, this)
     this._reset()
     this._start()
     return this
@@ -314,8 +323,10 @@ export const CurrentLayer = L.Layer.extend({
 
   onRemove(map) {
     this._stop()
-    map.off('moveend zoomend resize', this._reset, this)
-    map.off('movestart zoomstart', this._hide, this)
+    map.off('moveend zoomend resize', this._scheduleReset, this)
+    map.off('movestart', this._hide, this)
+    map.off('zoomstart', this._zoomStart, this)
+    map.off('zoomanim', this._animateZoom, this)
     this._canvas.remove()
     this._raster.remove()
     return this
@@ -375,6 +386,60 @@ export const CurrentLayer = L.Layer.extend({
     if (this._ctx) this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
   },
 
+  /**
+   * A zoom is starting: park the particles and let the raster carry the view.
+   *
+   * The screen velocity field is baked for one zoom level, so advecting
+   * through it while the map is mid-zoom draws motion at the wrong scale in
+   * the wrong place. The raster has no such problem — it is a picture of the
+   * ocean, and `_animateZoom` scales it with everything else — so freezing the
+   * particles for the ~250 ms of the animation costs nothing and removes the
+   * one part that cannot follow.
+   */
+  _zoomStart() {
+    this._zooming = true
+    this._hide()
+  },
+
+  /**
+   * Ride Leaflet's zoom animation, the way the tile layers do.
+   *
+   * Leaflet 1.x does not scale the map pane during a zoom; each layer is
+   * handed the target zoom and centre in `zoomanim` and transforms itself.
+   * A layer that ignores the event just sits at its old scale and position
+   * until `zoomend`, which is what this one used to do — the swath stayed put
+   * while the basemap moved under it, then jumped.
+   *
+   * The canvas holds the screen as it looked at `_bakeZoom`, anchored at the
+   * geographic point that was then its top-left corner. Scaling by the zoom
+   * ratio about that anchor, and translating the anchor to where it will land,
+   * is the same arithmetic `L.ImageOverlay` uses.
+   */
+  _animateZoom(e) {
+    if (!this._map || !this._bakeAnchor) return
+    const scale = this._map.getZoomScale(e.zoom, this._bakeZoom)
+    const offset = this._map._latLngToNewLayerPoint(this._bakeAnchor, e.zoom, e.center)
+    L.DomUtil.setTransform(this._raster, offset, scale)
+    L.DomUtil.setTransform(this._canvas, offset, scale)
+  },
+
+  /**
+   * Rebuild once per gesture, not once per event.
+   *
+   * A wheel zoom fires `zoomend` and then `moveend`, and each rebuild is a
+   * full pass over the screen field — tens of milliseconds of blocking work
+   * that was being done two or three times for one gesture. Coalescing on a
+   * frame keeps the last event of a burst and drops the rest.
+   */
+  _scheduleReset() {
+    if (this._resetPending) return
+    this._resetPending = true
+    requestAnimationFrame(() => {
+      this._resetPending = false
+      if (this._map) this._reset()
+    })
+  },
+
   _reset() {
     const map = this._map
     if (!map || !this._canvas) return
@@ -390,9 +455,16 @@ export const CurrentLayer = L.Layer.extend({
       c.height = Math.round(size.y * dpr)
       c.style.width = size.x + 'px'
       c.style.height = size.y + 'px'
-      // Pin to the map origin so both track pane transforms together.
+      // Pin to the map origin so both track pane transforms together. This is
+      // a pure translate, which also clears whatever scale the last zoom
+      // animation left on the element.
       L.DomUtil.setPosition(c, map.containerPointToLayerPoint([0, 0]))
     }
+
+    // What the canvas contents mean, geographically: the view this bake is of.
+    // `_animateZoom` needs both to place the canvas during the next zoom.
+    this._bakeAnchor = map.containerPointToLatLng([0, 0])
+    this._bakeZoom = map.getZoom()
 
     this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     this._ctx.clearRect(0, 0, size.x, size.y)
@@ -402,6 +474,7 @@ export const CurrentLayer = L.Layer.extend({
     this._buildField()
     this._drawRaster()
     this._seed()
+    this._zooming = false
   },
 
   /**
@@ -625,7 +698,9 @@ export const CurrentLayer = L.Layer.extend({
       this._raf = requestAnimationFrame(tick)
       const dt = Math.min((now - last) / 1000, 0.1)
       last = now
-      if (this._paused || !this._field || !this._particles.length) return
+      // `_zooming` holds until the post-zoom rebuild lands. Drawing before
+      // then would advect through a field baked for the old zoom.
+      if (this._paused || this._zooming || !this._field || !this._particles.length) return
 
       const ctx = this._ctx
       const w = this._w
