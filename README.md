@@ -48,7 +48,9 @@ statically.
   the granule's GLT, so displayed values are the delivered radiometry, copied and
   never interpolated. The eight L2A mask bands (cloud, cirrus, water, spacecraft,
   dilated cloud, AOD550, H2O, aggregate) come along as a toggleable overlay driven
-  by a `mask_band` selector; see "EMIT store layout" below.
+  by a `mask_band` selector; see "EMIT store layout" below. Draw a box on the map
+  and that block of the scene is rendered as a **3D image cube** — see "The image
+  cube" below.
 - **`swot-currents-leaflet.html`** — SWOT L3 geostrophic currents as an animated
   particle field, Windy-style: a colour raster carries true speed and pale
   streaks carry direction. The odd one out here — it reads no Zarr at all and
@@ -167,6 +169,42 @@ valid swath pixels and repeats others (1.55 ortho cells per swath pixel), becaus
 the ortho posting is finer than the swath IFOV. That is the granule's own
 orthorectification, not something the converter introduces — the alternative
 would be resampling, which would no longer be the delivered radiometry.
+
+## The image cube
+
+`cube-gl/cube-gl.js` renders a block of the scene as a volume: x is longitude,
+y is latitude, **z is wavelength**. It is the browser answer to HyperCoast's
+`image_cube`, which does the same three things through PyVista — maximum
+intensity, an alpha-composited volume with a threshold, and three orthogonal
+slices — except the data arrives as zarr chunks and nothing leaves the page.
+
+The spectral-major copy is what makes it cheap. `spectra/reflectance` is chunked
+`(285, 24, 24)`, so a box is *one* selection covering every band at once rather
+than 285 band reads:
+
+| box | chunks | read from CloudFront | GPU texture |
+|---|---|---|---|
+| 96 × 96 cells (~4.8 km) | 16 | 1.2 s | 11 MB |
+| 128 × 128 (~6.4 km) | 36 | 1.4 s | 19 MB |
+| 256 × 256 (~12.7 km) | 121 | 4.6 s | 75 MB |
+
+256 is the cap, which is also WebGL2's guaranteed floor for a 3D texture axis, so
+no GPU has to refuse a full-size cube. Where that floor is all a GPU has, the
+band axis is thinned to fit instead of failing. The block goes up as one `R32F`
+3D texture and every control after that — rotation, threshold, slice positions,
+colour limits, palette — is a uniform change, so interaction never touches the
+network.
+
+Colour limits differ by mode, and not cosmetically: a ray in max-intensity mode
+reports the largest value it met, so scaling those to the volume's own 2–98%
+(−0.010..0.060 for a sample block) paints a solid slab of the top colour. Max
+intensity is therefore scaled to the percentiles of the band-max image
+(0.053..0.087 for the same block), which resolves the shoals.
+
+The renderer was checked headlessly before it ever ran in a browser: its GLSL
+compiles and links on Mesa, and its camera, ray–box intersection and texture flip
+were rendered against real store data and compared with `numpy.nanmax` over the
+band axis — same features, and a branded north-west corner lands top-left.
 
 ## Tanager store layout
 

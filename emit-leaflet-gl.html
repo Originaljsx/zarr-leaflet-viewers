@@ -69,6 +69,26 @@
     padding: 2px 7px; font: inherit; font-size: 10px; cursor: pointer;
     background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
   }
+  /* image cube */
+  #cube {
+    position: absolute; top: 10px; right: 10px; z-index: 1100;
+    width: 430px; background: rgba(0,0,0,.86); border-radius: 6px;
+    color: #ccc; font-size: 11px; padding: 8px 10px 10px; display: none;
+  }
+  #cube.open { display: block; }
+  #cube-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #cube-canvas {
+    width: 100%; height: 300px; display: block; margin-top: 6px; cursor: grab;
+    background: radial-gradient(ellipse at 50% 45%, #12182a 0%, #05070d 72%);
+    border-radius: 4px; touch-action: none;
+  }
+  #cube-canvas:active { cursor: grabbing; }
+  #cube label { display: block; margin-top: 6px; }
+  #cube .row { display: flex; gap: 6px; align-items: center; }
+  #cube .row label { flex: 1; margin-top: 6px; }
+  #cube-stat { color: #9fd; margin-top: 4px; min-height: 1em; }
+  #cube-hint { color: #777; font-size: 10px; margin-top: 3px; }
+  .selecting #map { cursor: crosshair; }
 </style>
 </head>
 <body>
@@ -121,11 +141,62 @@
     </label>
   </fieldset>
 
+  <fieldset>
+    <legend>3D image cube</legend>
+    <div class="row">
+      <button type="button" id="cube-select" class="modebtn">Draw a box</button>
+      <button type="button" id="cube-here" class="modebtn">Box at centre</button>
+    </div>
+    <div id="cube-status" style="color:#777;font-size:10px;margin-top:5px;">
+      up to 256 &times; 256 cells (~13 km) &times; all 285 bands
+    </div>
+  </fieldset>
+
   <label>basemap
     <select id="basemap"></select>
   </label>
 
   <div id="readout">click the scene for a spectrum</div>
+</div>
+
+<div id="cube">
+  <div id="cube-head">
+    <b>image cube</b>
+    <span>
+      <button type="button" id="cube-reset" class="smallbtn">reset view</button>
+      <button type="button" id="cube-close" class="smallbtn">close</button>
+    </span>
+  </div>
+  <canvas id="cube-canvas"></canvas>
+  <div id="cube-stat">no cube loaded</div>
+  <div class="row">
+    <label>render
+      <select id="cube-mode">
+        <option value="mip">max intensity</option>
+        <option value="composite">volume (composite)</option>
+        <option value="slices">orthogonal slices</option>
+      </select>
+    </label>
+    <label>opacity <span id="cube-opval">100%</span>
+      <input id="cube-opacity" type="range" min="0.1" max="1" step="0.05" value="1" />
+    </label>
+  </div>
+  <label>threshold <span id="cube-thval"></span>
+    <input id="cube-threshold" type="range" min="0" max="1" step="0.001" value="0" />
+  </label>
+  <label id="cube-density-row">density <span id="cube-dval">0.60</span>
+    <input id="cube-density" type="range" min="0.05" max="2" step="0.05" value="0.6" />
+  </label>
+  <div id="cube-slice-rows" style="display:none;">
+    <label>band slice <span id="cube-zval"></span>
+      <input id="cube-z" type="range" min="0" max="1" step="0.002" value="0.5" />
+    </label>
+    <div class="row">
+      <label>x <input id="cube-x" type="range" min="0" max="1" step="0.005" value="0.5" /></label>
+      <label>y <input id="cube-y" type="range" min="0" max="1" step="0.005" value="0.5" /></label>
+    </div>
+  </div>
+  <div id="cube-hint">drag to rotate &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; z axis is wavelength</div>
 </div>
 
 <div id="spectrum">
@@ -155,6 +226,7 @@ import L from 'leaflet'
 // refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
 import { colormapBuilder } from './zarr-maps/index.js?v=3'
 import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
+import { ImageCube } from './cube-gl/cube-gl.js?v=1'
 import * as zarr from 'zarrita'
 
 window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
@@ -385,7 +457,12 @@ document.addEventListener('keydown', (e) => {
 })
 
 /* ---------- colormap / opacity / mask ---------- */
-el('cmap').onchange = () => { layer?.updateStyle({ colors: colormapBuilder(el('cmap').value) }); renderClimUI() }
+el('cmap').onchange = () => {
+  const colors = colormapBuilder(el('cmap').value)
+  layer?.updateStyle({ colors })
+  cube?.setColormap(colors)
+  renderClimUI()
+}
 el('opacity').oninput = () => {
   el('opval').textContent = `${Math.round(parseFloat(el('opacity').value) * 100)}%`
   layer?.updateStyle({ opacity: parseFloat(el('opacity').value) })
@@ -586,6 +663,7 @@ function updateReadout() {
 }
 
 map.on('click', async (e) => {
+  if (selecting) return          // the box drag ends with a click; not a spectrum
   const where = `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
   const seq = ++clickSeq
   readoutEl.textContent = `${where}: reading spectrum…`
@@ -612,6 +690,230 @@ el('sp-py-btn').onclick = () => {
   box.classList.toggle('open')
   box.textContent = box.classList.contains('open') ? pythonSnippet() : ''
 }
+
+/* ---------- 3D image cube ----------
+ * Draw a box, and the spectral-major copy of the scene gives up that box for
+ * every one of the 285 bands at once: `spectra/reflectance` is chunked
+ * (285, 24, 24), so a 96 x 96 box is 16 chunks rather than 285 band reads.
+ * That block goes to the GPU as a 3D texture and is rendered the way
+ * HyperCoast's `image_cube` renders it in PyVista -- max intensity, composited
+ * volume with a threshold, or three orthogonal slices -- except here nothing
+ * leaves the browser.
+ */
+// Cells per side. 256 is ~12.7 km, 4.6 s over CloudFront and a 75 MB texture --
+// and it is also WebGL2's guaranteed floor for a 3D texture axis, so no GPU has
+// to refuse it. 96 cells is ~1.2 s.
+const MAX_CUBE = 256
+let cube = null, selecting = false, cubeBox = null, cubeVolume = null
+
+/** Map bounds -> a cell window on the spectra grid, capped and clamped. */
+function cellWindow(bounds) {
+  if (!spectraGrid) return null
+  const { left, resX, top, resY, ny, nx } = spectraGrid
+  let c0 = Math.floor((bounds.getWest() - left) / resX)
+  let c1 = Math.ceil((bounds.getEast() - left) / resX)
+  let r0 = Math.floor((top - bounds.getNorth()) / resY)
+  let r1 = Math.ceil((top - bounds.getSouth()) / resY)
+  c0 = Math.max(0, Math.min(nx - 1, c0)); c1 = Math.max(c0 + 1, Math.min(nx, c1))
+  r0 = Math.max(0, Math.min(ny - 1, r0)); r1 = Math.max(r0 + 1, Math.min(ny, r1))
+  // Keep the centre, trim the edges, rather than refusing a large box.
+  let clipped = false
+  if (c1 - c0 > MAX_CUBE) { const m = (c0 + c1) >> 1; c0 = m - (MAX_CUBE >> 1); c1 = c0 + MAX_CUBE; clipped = true }
+  if (r1 - r0 > MAX_CUBE) { const m = (r0 + r1) >> 1; r0 = m - (MAX_CUBE >> 1); r1 = r0 + MAX_CUBE; clipped = true }
+  return { r0, r1, c0, c1, clipped }
+}
+
+/** Cell window -> its true footprint, so the drawn box snaps to the grid. */
+function windowBounds({ r0, r1, c0, c1 }) {
+  const { left, resX, top, resY } = spectraGrid
+  return L.latLngBounds(
+    [top - r1 * resY, left + c0 * resX],
+    [top - r0 * resY, left + c1 * resX])
+}
+
+function percentiles(data, lo, hi) {
+  const stride = Math.max(1, Math.floor(data.length / 400000))
+  const sample = []
+  for (let i = 0; i < data.length; i += stride) {
+    const v = data[i]
+    if (Number.isFinite(v)) sample.push(v)
+  }
+  if (!sample.length) return null
+  sample.sort((a, b) => a - b)
+  const at = (p) => sample[Math.min(sample.length - 1, Math.floor(p * (sample.length - 1)))]
+  return [at(lo), at(hi)]
+}
+
+function ensureCube() {
+  if (cube) return cube
+  cube = new ImageCube(el('cube-canvas'))
+  cube.setColormap(colormapBuilder(el('cmap').value))
+  return cube
+}
+
+async function loadCube(bounds) {
+  if (!spectraArr) { el('cube-status').textContent = 'no spectra group in this store'; return }
+  const win = cellWindow(bounds)
+  if (!win) return
+  const { r0, r1, c0, c1 } = win
+  const nr = r1 - r0, nc = c1 - c0
+  const chunk = spectraArr.chunks ?? [285, 24, 24]
+  const nChunks = Math.ceil(nr / chunk[1]) * Math.ceil(nc / chunk[2]) *
+    Math.ceil(spectraArr.shape[0] / chunk[0])
+  if (cubeBox) { map.removeLayer(cubeBox); cubeBox = null }
+  cubeBox = L.rectangle(windowBounds(win),
+    { color: '#38bdf8', weight: 1.5, fill: false, dashArray: '4 3' }).addTo(map)
+
+  el('cube').classList.add('open')
+  el('cube-stat').textContent = `reading ${nr} x ${nc} cells x ${spectraArr.shape[0]} bands ` +
+    `(${nChunks} chunk${nChunks === 1 ? '' : 's'})…`
+  const started = performance.now()
+  let out
+  try {
+    out = await zarr.get(spectraArr, [zarr.slice(null), zarr.slice(r0, r1), zarr.slice(c0, c1)])
+  } catch (err) {
+    console.error(err)
+    el('cube-stat').textContent = 'cube read failed (see console)'
+    return
+  }
+  const seconds = (performance.now() - started) / 1000
+
+  let [nz, ny, nx] = out.shape
+  let data = out.data instanceof Float32Array ? out.data : Float32Array.from(out.data, Number)
+  const view = ensureCube()
+  // WebGL2 only guarantees 256 per 3D-texture axis; where a GPU is at that
+  // floor, thin the band axis rather than refusing to draw.
+  let bandStep = 1
+  if (nz > view.maxDim) {
+    bandStep = Math.ceil(nz / view.maxDim)
+    const kept = Math.floor(nz / bandStep)
+    const thinned = new Float32Array(kept * ny * nx)
+    for (let z = 0; z < kept; z++) {
+      thinned.set(data.subarray(z * bandStep * ny * nx, (z * bandStep + 1) * ny * nx), z * ny * nx)
+    }
+    data = thinned; nz = kept
+  }
+
+  const range = percentiles(data, 0.02, 0.98) ?? [0, 0.5]
+  const full = percentiles(data, 0, 0.999) ?? range
+  // Max intensity needs its own limits: every ray reports the largest value it
+  // met, so scaling those to the whole volume's percentiles saturates the frame.
+  // Headless renders of a 96 x 96 block put the volume at 2-98% = -0.010..0.060
+  // against 0.053..0.087 for the band-max image -- the first is a solid slab of
+  // the top colour, the second resolves the shoals.
+  const maxImage = new Float32Array(nx * ny).fill(-Infinity)
+  for (let z = 0; z < nz; z++) {
+    const plane = z * ny * nx
+    for (let i = 0; i < ny * nx; i++) {
+      const v = data[plane + i]
+      if (v > maxImage[i]) maxImage[i] = v
+    }
+  }
+  const rangeMip = percentiles(maxImage, 0.02, 0.98) ?? range
+  cubeVolume = { nx, ny, nz, bandStep, r0, c0, range, rangeMip, full }
+  view.setVolume(data, { nx, ny, nz })
+  view.setStyle({ clim: el('cube-mode').value === 'mip' ? rangeMip : range, threshold: -Infinity })
+
+  const thr = el('cube-threshold')
+  thr.min = Math.min(0, full[0]); thr.max = full[1]
+  thr.step = Math.max(0.0005, (full[1] - Math.min(0, full[0])) / 200)
+  thr.value = thr.min
+  el('cube-thval').textContent = 'off'
+
+  const km = (nc * spectraGrid.resX * 111.32 * Math.cos(bounds.getCenter().lat * Math.PI / 180)).toFixed(1)
+  const mb = (data.length * 4 / 1e6).toFixed(0)
+  el('cube-stat').innerHTML =
+    `${nx} &times; ${ny} cells (~${km} km) &times; ${nz} bands` +
+    `${bandStep > 1 ? ` (every ${bandStep}${bandStep === 2 ? 'nd' : 'th'})` : ''}` +
+    ` · ${mb} MB · ${seconds.toFixed(1)} s` +
+    `${win.clipped ? ' · <span style="color:#fc6">box trimmed to ' + MAX_CUBE + ' cells</span>' : ''}`
+  el('cube-status').innerHTML = `cube: ${nx} &times; ${ny} &times; ${nz}`
+  updateSliceLabels()
+}
+
+/* Box drawing: Leaflet's own box zoom owns shift-drag, so selection is a mode
+ * button instead, with panning suspended while it is armed. */
+function setSelecting(on) {
+  selecting = on
+  el('cube-select').classList.toggle('active', on)
+  document.body.classList.toggle('selecting', on)
+  if (on) { map.dragging.disable(); map.boxZoom.disable() }
+  else { map.dragging.enable(); map.boxZoom.enable() }
+}
+el('cube-select').onclick = () => setSelecting(!selecting)
+el('cube-here').onclick = () => {
+  if (!spectraGrid) return
+  const c = map.getCenter()
+  const half = (MAX_CUBE * 0.75 / 2)
+  const dLat = half * spectraGrid.resY
+  const dLon = half * spectraGrid.resX
+  loadCube(L.latLngBounds([c.lat - dLat, c.lng - dLon], [c.lat + dLat, c.lng + dLon]))
+}
+
+let dragStart = null, dragRect = null
+map.on('mousedown', (e) => {
+  if (!selecting) return
+  dragStart = e.latlng
+  dragRect = L.rectangle(L.latLngBounds(e.latlng, e.latlng),
+    { color: '#38bdf8', weight: 1, fill: true, fillOpacity: 0.08 }).addTo(map)
+})
+map.on('mousemove', (e) => {
+  if (dragRect) dragRect.setBounds(L.latLngBounds(dragStart, e.latlng))
+})
+map.on('mouseup', (e) => {
+  if (!dragRect) return
+  const bounds = L.latLngBounds(dragStart, e.latlng)
+  map.removeLayer(dragRect); dragRect = null; dragStart = null
+  setSelecting(false)
+  // A stray click, not a drag: ignore rather than load a one-cell cube.
+  if (map.latLngToContainerPoint(bounds.getNorthEast())
+    .distanceTo(map.latLngToContainerPoint(bounds.getSouthWest())) < 12) return
+  loadCube(bounds)
+})
+
+function updateSliceLabels() {
+  const s = cube?.style?.slices
+  if (!s || !cubeVolume) return
+  const idx = Math.min(cubeVolume.nz - 1, Math.round(s.z * (cubeVolume.nz - 1)))
+  const nm = wavelengths[idx * cubeVolume.bandStep]
+  el('cube-zval').textContent = nm === undefined ? '' : `${nm.toFixed(1)} nm`
+}
+
+el('cube-mode').onchange = () => {
+  const mode = el('cube-mode').value
+  const clim = mode === 'mip' ? cubeVolume?.rangeMip : cubeVolume?.range
+  cube?.setStyle(clim ? { mode, clim } : { mode })
+  el('cube-slice-rows').style.display = mode === 'slices' ? 'block' : 'none'
+  el('cube-density-row').style.display = mode === 'composite' ? 'block' : 'none'
+}
+el('cube-opacity').oninput = () => {
+  const v = parseFloat(el('cube-opacity').value)
+  el('cube-opval').textContent = `${Math.round(v * 100)}%`
+  cube?.setStyle({ opacity: v })
+}
+el('cube-density').oninput = () => {
+  const v = parseFloat(el('cube-density').value)
+  el('cube-dval').textContent = v.toFixed(2)
+  cube?.setStyle({ density: v })
+}
+el('cube-threshold').oninput = () => {
+  const v = parseFloat(el('cube-threshold').value)
+  const off = v <= parseFloat(el('cube-threshold').min) + 1e-9
+  el('cube-thval').textContent = off ? 'off' : v.toFixed(3)
+  cube?.setStyle({ threshold: off ? -Infinity : v })
+}
+for (const axis of ['x', 'y', 'z']) {
+  el(`cube-${axis}`).oninput = () => {
+    cube?.setStyle({ slices: { [axis]: parseFloat(el(`cube-${axis}`).value) } })
+    if (axis === 'z') updateSliceLabels()
+  }
+}
+el('cube-reset').onclick = () => cube?.setView({ yaw: -0.9, pitch: 0.5, dist: 4.2 })
+el('cube-close').onclick = () => {
+  el('cube').classList.remove('open')
+  if (cubeBox) { map.removeLayer(cubeBox); cubeBox = null }
+}
+window.addEventListener('resize', () => cube?.draw())
 
 /* ---------- boot ---------- */
 for (const name of COLORMAP_NAMES) el('cmap').add(new Option(name, name))
@@ -640,6 +942,7 @@ for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
     }
     initClim(); setBasemap(); buildLayer()
     scheduleStretch()
+    el('cube-mode').onchange()      // sync which cube controls are visible
   } catch (err) {
     metaEl.textContent = 'failed to open store'
     warnEl.innerHTML = `${String(err.message ?? err)}<br><br>` +
