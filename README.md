@@ -174,9 +174,18 @@ would be resampling, which would no longer be the delivered radiometry.
 
 `cube-gl/cube-gl.js` renders a block of the scene as a volume: x is longitude,
 y is latitude, **z is wavelength**. It is the browser answer to HyperCoast's
-`image_cube`, which does the same three things through PyVista — maximum
-intensity, an alpha-composited volume with a threshold, and three orthogonal
-slices — except the data arrives as zarr chunks and nothing leaves the page.
+`image_cube`, which does the same things through PyVista, except the data
+arrives as zarr chunks and nothing leaves the page:
+
+| HyperCoast | here |
+|---|---|
+| default volume render | **volume (composite)**, the default mode |
+| `widget="threshold"` | threshold slider — samples below it are ignored |
+| `widget="orthogonal"` | orthogonal slices — three planes on x, y and band |
+| `widget="plane"` / `"slice"` (band) | **band clip**, a two-ended range on the wavelength axis, plus a scrub button that walks the cut through the spectrum a band at a time |
+| `rgb_wavelengths=[1000, 700, 500]`, `rgb_gamma=2` | **top cap: RGB**, the same three bands, each stretched on its own 2–98% and gamma-brightened |
+| — | **top cap: band at the cut**, the exposed face redrawn as that band's image while you scrub |
+| — | maximum intensity projection |
 
 The spectral-major copy is what makes it cheap. `spectra/reflectance` is chunked
 `(285, 24, 24)`, so a box is *one* selection covering every band at once rather
@@ -202,9 +211,11 @@ intensity is therefore scaled to the percentiles of the band-max image
 (0.053..0.087 for the same block), which resolves the shoals.
 
 The renderer was checked headlessly before it ever ran in a browser: its GLSL
-compiles and links on Mesa, and its camera, ray–box intersection and texture flip
-were rendered against real store data and compared with `numpy.nanmax` over the
-band axis — same features, and a branded north-west corner lands top-left.
+compiles and links on Mesa, and its camera, ray–box intersection, texture flip,
+band clipping and cap plane were rendered against real store data through the
+same shaders. The top-down max-intensity frame matches `numpy.nanmax` over the
+band axis feature for feature, a branded north-west corner lands top-left, and a
+700–900 nm clip renders as a plate at the right height in the cube.
 
 ## Tanager store layout
 

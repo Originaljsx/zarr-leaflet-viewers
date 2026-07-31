@@ -172,8 +172,8 @@
   <div class="row">
     <label>render
       <select id="cube-mode">
-        <option value="mip">max intensity</option>
         <option value="composite">volume (composite)</option>
+        <option value="mip">max intensity</option>
         <option value="slices">orthogonal slices</option>
       </select>
     </label>
@@ -196,6 +196,21 @@
       <label>y <input id="cube-y" type="range" min="0" max="1" step="0.005" value="0.5" /></label>
     </div>
   </div>
+  <fieldset id="cube-clip-rows">
+    <legend>band clip <span id="cube-cliplabel" style="color:#9fd"></span></legend>
+    <input id="cube-clip-lo" type="range" min="0" max="1" step="0.002" value="0" />
+    <input id="cube-clip-hi" type="range" min="0" max="1" step="0.002" value="1" />
+    <div class="row" style="margin-top:6px;">
+      <label style="margin:0;">top cap
+        <select id="cube-cap">
+          <option value="none">none</option>
+          <option value="band">band at the cut</option>
+          <option value="rgb" selected>RGB 1000 / 700 / 500 nm</option>
+        </select>
+      </label>
+      <button type="button" id="cube-scrub" class="modebtn" style="flex:0 0 auto;padding:4px 8px;">scrub ▶</button>
+    </div>
+  </fieldset>
   <div id="cube-hint">drag to rotate &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; z axis is wavelength</div>
 </div>
 
@@ -812,7 +827,19 @@ async function loadCube(bounds) {
   const rangeMip = percentiles(maxImage, 0.02, 0.98) ?? range
   cubeVolume = { nx, ny, nz, bandStep, r0, c0, range, rangeMip, full }
   view.setVolume(data, { nx, ny, nz })
-  view.setStyle({ clim: el('cube-mode').value === 'mip' ? rangeMip : range, threshold: -Infinity })
+  view.setCapImage(buildCapImage(data, nx, ny, nz, bandStep), { nx, ny })
+  view.setStyle({
+    clim: el('cube-mode').value === 'mip' ? rangeMip : range,
+    threshold: -Infinity,
+    cap: el('cube-cap').value,
+    crop: { min: [0, 0, 0], max: [1, 1, 1] },
+  })
+  stopScrub()
+  for (const [id, value] of [['cube-clip-lo', 0], ['cube-clip-hi', 1]]) {
+    el(id).step = 1 / (nz - 1)
+    el(id).value = value
+  }
+  applyClip()
 
   const thr = el('cube-threshold')
   thr.min = Math.min(0, full[0]); thr.max = full[1]
@@ -871,13 +898,82 @@ map.on('mouseup', (e) => {
   loadCube(bounds)
 })
 
+/** Cube band index (which may be thinned) -> wavelength. */
+function cubeNm(fraction) {
+  if (!cubeVolume) return undefined
+  const idx = Math.min(cubeVolume.nz - 1, Math.max(0, Math.round(fraction * (cubeVolume.nz - 1))))
+  return wavelengths[idx * cubeVolume.bandStep]
+}
+
 function updateSliceLabels() {
   const s = cube?.style?.slices
   if (!s || !cubeVolume) return
-  const idx = Math.min(cubeVolume.nz - 1, Math.round(s.z * (cubeVolume.nz - 1)))
-  const nm = wavelengths[idx * cubeVolume.bandStep]
+  const nm = cubeNm(s.z)
   el('cube-zval').textContent = nm === undefined ? '' : `${nm.toFixed(1)} nm`
 }
+
+/* Clipping the band axis is HyperCoast's `widget="plane"`: the cube is cut at a
+ * wavelength and what you see is the cut. Dragging the top edge walks the cut
+ * through the spectrum, and with the cap on "band at the cut" the exposed face
+ * is that band's image. */
+function applyClip() {
+  if (!cube) return
+  let lo = parseFloat(el('cube-clip-lo').value)
+  let hi = parseFloat(el('cube-clip-hi').value)
+  if (lo > hi) [lo, hi] = [hi, lo]
+  cube.setStyle({ crop: { min: [0, 0, lo], max: [1, 1, hi] } })
+  const loNm = cubeNm(lo), hiNm = cubeNm(hi)
+  el('cube-cliplabel').textContent = loNm === undefined ? ''
+    : (hi - lo < 0.004 ? `${hiNm.toFixed(1)} nm`
+      : `${loNm.toFixed(1)} – ${hiNm.toFixed(1)} nm`)
+}
+el('cube-clip-lo').oninput = applyClip
+el('cube-clip-hi').oninput = applyClip
+
+/** Walk the cut through the spectrum, one band per frame. */
+let scrubTimer = null
+function stopScrub() {
+  if (scrubTimer) clearInterval(scrubTimer)
+  scrubTimer = null
+  el('cube-scrub').textContent = 'scrub ▶'
+  el('cube-scrub').classList.remove('active')
+}
+el('cube-scrub').onclick = () => {
+  if (scrubTimer) { stopScrub(); return }
+  if (!cubeVolume) return
+  el('cube-scrub').textContent = 'stop ■'
+  el('cube-scrub').classList.add('active')
+  const step = 1 / (cubeVolume.nz - 1)
+  scrubTimer = setInterval(() => {
+    let hi = parseFloat(el('cube-clip-hi').value) + step
+    if (hi > 1) hi = parseFloat(el('cube-clip-lo').value)
+    el('cube-clip-hi').value = hi
+    applyClip()
+  }, 60)
+}
+
+/* The RGB cap, HyperCoast's `rgb_wavelengths` with `rgb_gamma`: three bands,
+ * each stretched on its own percentiles, then gamma-brightened. */
+const CAP_RGB_NM = [1000, 700, 500]
+const CAP_GAMMA = 2
+function buildCapImage(data, nx, ny, nz, bandStep) {
+  const planes = CAP_RGB_NM.map((nm) =>
+    Math.min(nz - 1, Math.round(nearestBand(nm) / bandStep)))
+  const rgba = new Uint8Array(nx * ny * 4).fill(255)
+  planes.forEach((z, channel) => {
+    const plane = data.subarray(z * ny * nx, (z + 1) * ny * nx)
+    const range = percentiles(plane, 0.02, 0.98) ?? [0, 1]
+    const span = Math.max(1e-9, range[1] - range[0])
+    for (let i = 0; i < ny * nx; i++) {
+      const v = plane[i]
+      if (!Number.isFinite(v)) { rgba[i * 4 + 3] = 0; continue }
+      const t = Math.min(1, Math.max(0, (v - range[0]) / span))
+      rgba[i * 4 + channel] = Math.round(255 * Math.pow(t, 1 / CAP_GAMMA))
+    }
+  })
+  return rgba
+}
+el('cube-cap').onchange = () => cube?.setStyle({ cap: el('cube-cap').value })
 
 el('cube-mode').onchange = () => {
   const mode = el('cube-mode').value
@@ -885,6 +981,9 @@ el('cube-mode').onchange = () => {
   cube?.setStyle(clim ? { mode, clim } : { mode })
   el('cube-slice-rows').style.display = mode === 'slices' ? 'block' : 'none'
   el('cube-density-row').style.display = mode === 'composite' ? 'block' : 'none'
+  // Clipping cuts the ray-marched box; the slice planes are their own geometry.
+  el('cube-clip-rows').style.display = mode === 'slices' ? 'none' : 'block'
+  if (mode === 'slices') stopScrub()
 }
 el('cube-opacity').oninput = () => {
   const v = parseFloat(el('cube-opacity').value)

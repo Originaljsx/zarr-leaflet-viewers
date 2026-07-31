@@ -129,6 +129,35 @@ void main() {
   fragColor = vec4(texture(u_ramp, vec2(t, 0.5)).rgb, u_opacity);
 }`
 
+/* The cap is the image laid over the top of the cube, HyperCoast's
+ * `rgb_wavelengths` overlay: either a three-band composite uploaded as an RGB
+ * texture, or whichever single band the clip plane currently sits on, sampled
+ * straight out of the volume. */
+const CAP_FRAG = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+in vec3 v_tex;
+out vec4 fragColor;
+uniform sampler3D u_volume;
+uniform sampler2D u_ramp;
+uniform sampler2D u_rgb;
+uniform vec2 u_clim;
+uniform float u_opacity;
+uniform float u_capZ;          // texture-space band the cap shows
+uniform int u_rgbMode;         // 1 = composite texture, 0 = single band + ramp
+void main() {
+  if (u_rgbMode == 1) {
+    vec4 rgb = texture(u_rgb, v_tex.xy);
+    if (rgb.a < 0.5) discard;
+    fragColor = vec4(rgb.rgb, u_opacity);
+    return;
+  }
+  float value = texture(u_volume, vec3(v_tex.xy, u_capZ)).r;
+  if (value != value) discard;
+  float t = clamp((value - u_clim.x) / max(1e-9, u_clim.y - u_clim.x), 0.0, 1.0);
+  fragColor = vec4(texture(u_ramp, vec2(t, 0.5)).rgb, u_opacity);
+}`
+
 const LINE_VERT = `#version 300 es
 precision highp float;
 in vec3 a_pos;
@@ -206,18 +235,27 @@ function boxTriangles(h) {
   return new Float32Array(out)
 }
 
-/** 12 edges of the same box, as line segments. */
-function boxEdges(h) {
-  const [x, y, z] = h
+/** 12 edges of a box given opposite corners, as line segments. */
+function boxEdges(lo, hi) {
+  const [x0, y0, z0] = lo, [x1, y1, z1] = hi
   const v = [
-    [-x, -y, -z], [x, -y, -z], [x, y, -z], [-x, y, -z],
-    [-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z],
+    [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+    [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
   ]
   const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
     [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]
   const out = []
   for (const [a, b] of pairs) out.push(...v[a], ...v[b])
   return new Float32Array(out)
+}
+
+/** A quad spanning the cropped x/y footprint at one band, for the cap. */
+function capQuad(lo, hi, z) {
+  const [x0, y0] = lo, [x1, y1] = hi
+  return new Float32Array([
+    x0, y0, z, x1, y0, z, x1, y1, z,
+    x0, y0, z, x1, y1, z, x0, y1, z,
+  ])
 }
 
 function compile(gl, vertSrc, fragSrc) {
@@ -256,17 +294,27 @@ export class ImageCube {
 
     this.volumeProgram = compile(gl, VERT, FRAG)
     this.sliceProgram = compile(gl, SLICE_VERT, SLICE_FRAG)
+    this.capProgram = compile(gl, SLICE_VERT, CAP_FRAG)
     this.lineProgram = compile(gl, LINE_VERT, LINE_FRAG)
 
-    this.buffers = { box: gl.createBuffer(), edges: gl.createBuffer(), slices: gl.createBuffer() }
+    this.buffers = {
+      box: gl.createBuffer(), edges: gl.createBuffer(),
+      slices: gl.createBuffer(), cap: gl.createBuffer(),
+    }
     this.volume = null
     this.ramp = null
+    this.rgbCap = null
     this.shape = { nx: 1, ny: 1, nz: 1 }
     this.half = [1, 1, Z_ASPECT]
 
     this.style = {
       clim: [0, 1], threshold: -Infinity, density: 0.6, opacity: 1,
-      mode: 'mip', slices: { x: 0.5, y: 0.5, z: 0.5 }, steps: 256,
+      mode: 'composite', slices: { x: 0.5, y: 0.5, z: 0.5 }, steps: 256,
+      // Crop is in texture coordinates: x west-to-east, y north-to-south rows,
+      // z band index. Cropping z is HyperCoast's `widget="plane"` -- the cube is
+      // cut at a band and the cut face is what you see.
+      crop: { min: [0, 0, 0], max: [1, 1, 1] },
+      cap: 'none',          // 'none' | 'rgb' | 'band'
     }
     this.view = { yaw: -0.9, pitch: 0.5, dist: 4.2 }
     this._frame = null
@@ -305,9 +353,37 @@ export class ImageCube {
     this.half = [ax, ay, Z_ASPECT]
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.box)
     gl.bufferData(gl.ARRAY_BUFFER, boxTriangles(this.half), gl.STATIC_DRAW)
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.edges)
-    gl.bufferData(gl.ARRAY_BUFFER, boxEdges(this.half), gl.STATIC_DRAW)
     this.draw()
+  }
+
+  /**
+   * The three-band composite laid over the top of the cube -- HyperCoast's
+   * `rgb_wavelengths`. Alpha 0 marks cells with no data.
+   * @param {Uint8Array} rgba nx * ny * 4, row 0 northernmost.
+   */
+  setCapImage(rgba, { nx, ny }) {
+    const gl = this.gl
+    if (this.rgbCap) gl.deleteTexture(this.rgbCap)
+    this.rgbCap = gl.createTexture()
+    gl.bindTexture(gl.TEXTURE_2D, this.rgbCap)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, nx, ny, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    this.draw()
+  }
+
+  /** The cropped box in model space, as [lo, hi] corners. */
+  cropBox() {
+    const [hx, hy, hz] = this.half
+    const { min, max } = this.style.crop
+    const lerp = (h, t) => -h + 2 * h * t
+    return [
+      [lerp(hx, min[0]), lerp(hy, 1 - max[1]), lerp(hz, min[2])],
+      [lerp(hx, max[0]), lerp(hy, 1 - min[1]), lerp(hz, max[2])],
+    ]
   }
 
   /** @param {Array<[number,number,number]>} colors 0..1 or 0..255 triples. */
@@ -336,6 +412,7 @@ export class ImageCube {
   setStyle(patch) {
     Object.assign(this.style, patch)
     if (patch.slices) this.style.slices = { ...this.style.slices, ...patch.slices }
+    if (patch.crop) this.style.crop = { ...this.style.crop, ...patch.crop }
     this.draw()
   }
 
@@ -411,9 +488,21 @@ export class ImageCube {
       perspective(Math.PI / 4, width / height, 0.05, 60),
       lookAt(eye, [0, 0, 0], [0, 0, 1]))
 
-    this._drawEdges(mvp, [0.42, 0.47, 0.55, 0.85])
+    const [lo, hi] = this.cropBox()
+    const cropped = this.style.crop.min.some((v) => v > 0) || this.style.crop.max.some((v) => v < 1)
+    // The full extent stays visible as a faint frame so a clipped cube still
+    // shows how much of the spectrum has been cut away.
+    if (cropped) this._drawEdges(mvp, [0.30, 0.34, 0.42, 0.5], boxEdges([-this.half[0], -this.half[1], -this.half[2]], this.half))
+    this._drawEdges(mvp, [0.42, 0.47, 0.55, 0.85], boxEdges(lo, hi))
+
+    // The cap is opaque, so it goes last when the camera is above it and first
+    // when below -- a painter's rule, which is enough for one horizontal plane.
+    const showCap = this.style.cap !== 'none'
+    const cameraAbove = eye[2] > hi[2]
+    if (showCap && !cameraAbove) this._drawCap(mvp, lo, hi)
     if (this.style.mode === 'slices') this._drawSlices(mvp)
     else this._drawVolume(mvp, eye)
+    if (showCap && cameraAbove) this._drawCap(mvp, lo, hi)
   }
 
   _bindAttrib(program, buffer) {
@@ -424,13 +513,44 @@ export class ImageCube {
     gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0)
   }
 
-  _drawEdges(mvp, color) {
+  _drawEdges(mvp, color, vertices) {
     const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.edges)
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW)
     gl.useProgram(this.lineProgram)
     this._bindAttrib(this.lineProgram, this.buffers.edges)
     gl.uniformMatrix4fv(gl.getUniformLocation(this.lineProgram, 'u_mvp'), false, mvp)
     gl.uniform4fv(gl.getUniformLocation(this.lineProgram, 'u_color'), color)
     gl.drawArrays(gl.LINES, 0, 24)
+  }
+
+  /** The image laid over the top of the (cropped) cube. */
+  _drawCap(mvp, lo, hi) {
+    const gl = this.gl
+    const rgbMode = this.style.cap === 'rgb' && this.rgbCap
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.cap)
+    gl.bufferData(gl.ARRAY_BUFFER, capQuad(lo, hi, hi[2]), gl.DYNAMIC_DRAW)
+    const p = this.capProgram
+    gl.useProgram(p)
+    this._bindAttrib(p, this.buffers.cap)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_3D, this.volume)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.ramp)
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.rgbCap ?? this.ramp)
+    const u = (name) => gl.getUniformLocation(p, name)
+    gl.uniform1i(u('u_volume'), 0)
+    gl.uniform1i(u('u_ramp'), 1)
+    gl.uniform1i(u('u_rgb'), 2)
+    gl.uniformMatrix4fv(u('u_mvp'), false, mvp)
+    gl.uniform3fv(u('u_half'), this.half)
+    gl.uniform2fv(u('u_clim'), this.style.clim)
+    gl.uniform1f(u('u_opacity'), 1)
+    // A cap in band mode shows the band the clip plane is standing on.
+    gl.uniform1f(u('u_capZ'), this.style.crop.max[2])
+    gl.uniform1i(u('u_rgbMode'), rgbMode ? 1 : 0)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
   }
 
   _drawVolume(mvp, eye) {
