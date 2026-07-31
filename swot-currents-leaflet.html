@@ -18,7 +18,6 @@
   #panel .row label { margin-top: 0; }
   #meta { margin-top: 6px; color: #aaa; }
   #readout { margin-top: 8px; color: #9fd; min-height: 3.2em; }
-  #note { margin-top: 8px; color: #888; font-size: 11px; line-height: 1.35; }
   #bar { height: 10px; border-radius: 2px; margin-top: 6px; }
   #ticks { display: flex; justify-content: space-between; color: #aaa; font-size: 11px; }
   .chk { display: flex; align-items: center; gap: 6px; }
@@ -54,7 +53,6 @@
   </div>
 
   <div id="readout">click the swath for a value</div>
-  <div id="note"></div>
 </div>
 
 <script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4"}}</script>
@@ -111,15 +109,6 @@ el('meta').innerHTML =
   `cycle ${m.cycle} pass ${m.pass} &middot; ${m.time.replace('T', ' ')}Z<br>` +
   `${m.shape[0]} &times; ${m.shape[1]} samples, ${(m.valid_fraction * 100).toFixed(0)}% valid<br>` +
   `${m.variables.u} / ${m.variables.v}`
-
-// Two honest caveats about what is on screen, kept next to it rather than in a
-// README nobody opens.
-el('note').innerHTML =
-  'Absolute geostrophic velocity on the native 2 km swath — no regridding. ' +
-  'Particle speed is stylised for legibility; the colour is the true speed.<br><br>' +
-  'Geostrophy breaks down at the equator (the Coriolis parameter goes to zero), ' +
-  'so the very fast values in the tropical band are a property of the ' +
-  'derivation, not the ocean.'
 
 window.__map = map
 window.__layer = layer

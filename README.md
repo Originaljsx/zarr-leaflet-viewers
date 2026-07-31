@@ -113,8 +113,10 @@ it lands. The rebuild itself is coalesced onto a frame, because `zoomend` and
 
 Speeds are absolute geostrophic velocity (`ugos_filtered`, `vgos_filtered` —
 anomaly plus MDT, so the mean flow is included). Near the equator the Coriolis
-parameter goes to zero and the geostrophic derivation inflates; the page says so
-next to the map rather than quietly clipping it.
+parameter goes to zero and the geostrophic derivation inflates, so the tropical
+band runs much faster than the ocean does. Those values are shown as they come —
+nothing is clamped — which is worth knowing before reading speed off the ramp
+there.
 
 ## zarr-gl/
 
