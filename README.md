@@ -56,6 +56,17 @@ statically.
   streaks carry direction. The odd one out here — it reads no Zarr at all and
   renders the swath on its **native curvilinear grid**; see "Currents on the
   native swath" below.
+- **`miost-currents-leaflet.html`** — the same animated-particle engine taken
+  **global**: one MIOST/DUACS experimental L4 daily grid (multi-mission
+  altimetry including SWOT) of absolute geostrophic velocity `ugos`/`vgos` on a
+  regular 0.125° lattice. `tools/miost_l4_currents.py` quantises the two
+  components to int16 at 1 mm/s (16.6 MB, committed like the SWOT payload); the
+  manifest carries the grid geometry, so no coordinate arrays ship at all.
+  `currents/grid-field.js` implements the same `sample()` contract as
+  `SwathField` with plain index arithmetic + a bilinear blend that
+  re-normalises over valid corners at coastlines and wraps in longitude —
+  `CurrentLayer` itself is reused untouched. `?data=<url>` points the page at a
+  different day.
 
 ## Currents on the native swath
 

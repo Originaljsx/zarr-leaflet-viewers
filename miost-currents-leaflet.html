@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>MIOST Viewer — Global Geostrophic Currents (Leaflet)</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; }
+  #map { position: absolute; inset: 0; background: #000; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.75); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 260px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel input, #panel select { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  #panel .row label { margin-top: 0; }
+  #meta { margin-top: 6px; color: #aaa; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 3.2em; }
+  #bar { height: 10px; border-radius: 2px; margin-top: 6px; }
+  #ticks { display: flex; justify-content: space-between; color: #aaa; font-size: 11px; }
+  .chk { display: flex; align-items: center; gap: 6px; }
+  .chk input { width: auto; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>MIOST Global Geostrophic Currents</b>
+  <div id="meta">loading grid…</div>
+
+  <label>go to
+    <select id="place">
+      <option value="25,-45,3">Global (Atlantic)</option>
+      <option value="30,-75,5">Gulf Stream</option>
+      <option value="35,145,5">Kuroshio</option>
+      <option value="-38,25,5">Agulhas</option>
+      <option value="-50,-60,4">Malvinas / Drake</option>
+      <option value="-2,-30,4">Equatorial Atlantic</option>
+    </select>
+  </label>
+
+  <label>current speed
+    <div id="bar"></div>
+    <div id="ticks"></div>
+  </label>
+
+  <label>raster opacity <span id="opval">75%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.75" />
+  </label>
+
+  <div class="row">
+    <label class="chk"><input id="pause" type="checkbox" /> pause particles</label>
+  </div>
+
+  <div id="readout">click the ocean for a value</div>
+</div>
+
+<script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4"}}</script>
+<script type="module">
+import L from 'leaflet'
+import { currentLayer, CURRENT_LEGEND } from './currents/currents-layer.js?v=1'
+import { loadGridField } from './currents/grid-field.js?v=1'
+
+const el = (id) => document.getElementById(id)
+const params = new URLSearchParams(location.search)
+const DATA = params.get('data') || 'data/miost_currents_20251228.json'
+
+const map = L.map('map', { center: [25, -45], zoom: 3, worldCopyJump: true })
+L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+}).addTo(map)
+
+// ---------- legend ----------
+el('bar').style.background = CURRENT_LEGEND.css
+el('ticks').innerHTML = CURRENT_LEGEND.ticks.map((t) => `<span>${t}</span>`).join('')
+
+// ---------- layer ----------
+const layer = currentLayer({ rasterOpacity: 0.75 }).addTo(map)
+
+el('opacity').oninput = () => {
+  const v = +el('opacity').value
+  layer.setRasterOpacity(v)
+  el('opval').textContent = Math.round(v * 100) + '%'
+}
+el('pause').onchange = () => layer.setPaused(el('pause').checked)
+el('place').onchange = () => {
+  const [lat, lon, z] = el('place').value.split(',').map(Number)
+  map.setView([lat, lon], z)
+}
+
+map.on('click', (e) => {
+  const r = layer.at(e.latlng.lat, e.latlng.lng, layer.cutoff())
+  if (!r) {
+    el('readout').textContent = 'no data at that point'
+    return
+  }
+  el('readout').innerHTML =
+    `speed <b>${r.speed.toFixed(3)}</b> m/s<br>` +
+    `toward ${r.dir.toFixed(0)}&deg;<br>` +
+    `u ${r.u.toFixed(3)}  v ${r.v.toFixed(3)} m/s`
+})
+
+// ---------- data ----------
+const grid = await loadGridField(DATA)
+layer.setData(grid)
+
+const m = grid.meta
+el('meta').innerHTML =
+  `MIOST L4 (DUACS exp) &middot; ${m.date}<br>` +
+  `${m.grid.nlat} &times; ${m.grid.nlon} @ ${m.grid.dlat.toFixed(3)}&deg;, ` +
+  `${(m.valid_fraction * 100).toFixed(0)}% ocean<br>` +
+  `${m.variables.u} / ${m.variables.v}`
+
+window.__map = map
+window.__layer = layer
+window.__grid = grid
+</script>
+</body>
+</html>

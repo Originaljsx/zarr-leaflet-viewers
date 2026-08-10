@@ -1,0 +1,38 @@
+{
+  "granule": "dt_global_allsat_phy_l4_20251228_20250112.nc",
+  "date": "2025-12-28",
+  "grid": {
+    "lat0": -90.0,
+    "dlat": 0.125,
+    "nlat": 1441,
+    "lon0": -180.0,
+    "dlon": 0.125,
+    "nlon": 2880
+  },
+  "bin": "miost_currents_20251228.bin",
+  "arrays": {
+    "u": {
+      "offset": 0,
+      "bytes": 8300160,
+      "dtype": "int16"
+    },
+    "v": {
+      "offset": 8300160,
+      "bytes": 8300160,
+      "dtype": "int16"
+    }
+  },
+  "scale": 0.001,
+  "sentinel": -32768,
+  "variables": {
+    "u": "ugos",
+    "v": "vgos",
+    "units": "m/s"
+  },
+  "valid_fraction": 0.5445321535970391,
+  "speed": {
+    "median": 0.12122437873626409,
+    "p99": 0.7889068953813304,
+    "max": 3.6169062760873416
+  }
+}

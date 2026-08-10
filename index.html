@@ -33,6 +33,10 @@ No backend, no tiles server.</p>
   <li><a href="swot-currents-leaflet.html">SWOT geostrophic currents — animated, native swath</a>
     <div class="sub">Windy-style particle field over one L3 pass: colour carries true speed, pale streaks
     carry direction. The odd one out — no zarr and no regridding, the curvilinear 2 km swath is searched directly</div></li>
+  <li><a href="miost-currents-leaflet.html">MIOST global geostrophic currents — animated, whole ocean</a>
+    <div class="sub">the same particle engine taken global: one MIOST/DUACS L4 daily grid (multi-mission
+    altimetry incl. SWOT), 0.125°, int16-quantised. The lattice is regular, so the swath search collapses
+    to index arithmetic + a bilinear blend</div></li>
 </ul>
 </body>
 </html>
