@@ -74,11 +74,15 @@
     position: absolute; top: 10px; right: 10px; z-index: 1100;
     width: 430px; background: rgba(0,0,0,.86); border-radius: 6px;
     color: #ccc; font-size: 11px; padding: 8px 10px 10px; display: none;
+    /* drag the bottom-left-ish corner to grow the cube */
+    resize: both; overflow: auto;
+    min-width: 340px; max-width: 92vw; max-height: 94vh;
   }
-  #cube.open { display: block; }
+  #cube.open { display: flex; flex-direction: column; }
   #cube-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   #cube-canvas {
-    width: 100%; height: 300px; display: block; margin-top: 6px; cursor: grab;
+    width: 100%; height: 300px; flex: 1 1 300px; min-height: 240px;
+    display: block; margin-top: 6px; cursor: grab;
     background: radial-gradient(ellipse at 50% 45%, #12182a 0%, #05070d 72%);
     border-radius: 4px; touch-action: none;
   }
@@ -203,6 +207,7 @@
     <div class="row" style="margin-top:6px;">
       <label style="margin:0;">top cap
         <select id="cube-cap">
+          <option value="auto">auto (band once cut)</option>
           <option value="none">none</option>
           <option value="band">band at the cut</option>
           <option value="rgb">RGB 1000 / 700 / 500 nm</option>
@@ -211,7 +216,8 @@
       <button type="button" id="cube-scrub" class="modebtn" style="flex:0 0 auto;padding:4px 8px;">scrub ▶</button>
     </div>
   </fieldset>
-  <div id="cube-hint">drag to rotate &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; z axis is wavelength</div>
+  <div id="cube-hint">drag to rotate &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; z axis is wavelength
+    &nbsp;·&nbsp; [ ] step the cut by one band &nbsp;·&nbsp; drag panel corner to enlarge</div>
 </div>
 
 <div id="spectrum">
@@ -241,7 +247,7 @@ import L from 'leaflet'
 // refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
 import { colormapBuilder } from './zarr-maps/index.js?v=3'
 import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
-import { ImageCube } from './cube-gl/cube-gl.js?v=1'
+import { ImageCube } from './cube-gl/cube-gl.js?v=2'
 import * as zarr from 'zarrita'
 
 window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
@@ -763,6 +769,8 @@ function ensureCube() {
   if (cube) return cube
   cube = new ImageCube(el('cube-canvas'))
   cube.setColormap(colormapBuilder(el('cmap').value))
+  // The panel corner is draggable (CSS resize), so redraw when the canvas moves.
+  new ResizeObserver(() => cube?.draw()).observe(el('cube-canvas'))
   return cube
 }
 
@@ -831,7 +839,7 @@ async function loadCube(bounds) {
   view.setStyle({
     clim: el('cube-mode').value === 'mip' ? rangeMip : range,
     threshold: -Infinity,
-    cap: el('cube-cap').value,
+    cap: effectiveCap(),
     crop: { min: [0, 0, 0], max: [1, 1, 1] },
   })
   stopScrub()
@@ -915,12 +923,20 @@ function updateSliceLabels() {
  * wavelength and what you see is the cut. Dragging the top edge walks the cut
  * through the spectrum, and with the cap on "band at the cut" the exposed face
  * is that band's image. */
+/** 'auto' cap: nothing on an uncut cube, the band image once the top is cut. */
+function effectiveCap() {
+  const sel = el('cube-cap').value
+  if (sel !== 'auto') return sel
+  const hi = parseFloat(el('cube-clip-hi').value)
+  const lo = parseFloat(el('cube-clip-lo').value)
+  return Math.min(1, Math.max(lo, hi)) < 0.999 ? 'band' : 'none'
+}
 function applyClip() {
   if (!cube) return
   let lo = parseFloat(el('cube-clip-lo').value)
   let hi = parseFloat(el('cube-clip-hi').value)
   if (lo > hi) [lo, hi] = [hi, lo]
-  cube.setStyle({ crop: { min: [0, 0, lo], max: [1, 1, hi] } })
+  cube.setStyle({ crop: { min: [0, 0, lo], max: [1, 1, hi] }, cap: effectiveCap() })
   const loNm = cubeNm(lo), hiNm = cubeNm(hi)
   el('cube-cliplabel').textContent = loNm === undefined ? ''
     : (hi - lo < 0.004 ? `${hiNm.toFixed(1)} nm`
@@ -928,6 +944,19 @@ function applyClip() {
 }
 el('cube-clip-lo').oninput = applyClip
 el('cube-clip-hi').oninput = applyClip
+// [ and ] walk the cut down/up one band at a time.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '[' && e.key !== ']') return
+  if (!cubeVolume || !el('cube').classList.contains('open')) return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+  const step = 1 / (cubeVolume.nz - 1)
+  const s = el('cube-clip-hi')
+  s.value = Math.min(1, Math.max(parseFloat(el('cube-clip-lo').value),
+    parseFloat(s.value) + (e.key === ']' ? step : -step)))
+  applyClip()
+})
 
 /** Walk the cut through the spectrum, one band per frame. */
 let scrubTimer = null
@@ -972,7 +1001,7 @@ function buildCapImage(data, nx, ny, nz, bandStep) {
   })
   return rgba
 }
-el('cube-cap').onchange = () => cube?.setStyle({ cap: el('cube-cap').value })
+el('cube-cap').onchange = () => cube?.setStyle({ cap: effectiveCap() })
 
 el('cube-mode').onchange = () => {
   const mode = el('cube-mode').value
