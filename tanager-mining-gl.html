@@ -1,0 +1,1061 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Tanager surface reflectance (426 bands) — Leaflet + WebGL</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; background: #05070d; }
+  #map { position: absolute; inset: 0; background: #05070d; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.78); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 272px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel select, #panel input[type=number] { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row label { flex: 1; }
+  #meta { margin-top: 6px; color: #aaa; min-height: 1em; line-height: 1.45; }
+  #warn { margin-top: 4px; color: #fc6; min-height: 0; }
+  #warn:empty { display: none; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 1em; }
+  #bandlabel { color: #9fd; }
+  #bandlabel .flagged { color: #fc6; }
+  .modebtn {
+    flex: 1; padding: 4px 0; font: inherit; font-size: 12px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+  .modebtn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  input[type=range] { width: 100%; }
+  .dual { position: relative; height: 30px; margin-top: 4px; }
+  .dual input[type=range] {
+    position: absolute; left: 0; top: 8px; margin: 0; width: 100%;
+    -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+  }
+  .dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    height: 14px; width: 14px; border-radius: 50%; background: #2563eb;
+    border: 2px solid #fff; cursor: pointer; margin-top: 0;
+  }
+  .dual input[type=range]::-moz-range-thumb {
+    pointer-events: auto; height: 14px; width: 14px; border-radius: 50%;
+    background: #2563eb; border: 2px solid #fff; cursor: pointer;
+  }
+  .dual .track { position: absolute; left: 0; right: 0; top: 13px; height: 4px;
+    background: #444; border-radius: 2px; }
+  .dual .fill { position: absolute; top: 13px; height: 4px; background: #2563eb;
+    border-radius: 2px; }
+  fieldset { border: 1px solid #333; border-radius: 4px; margin: 10px 0 0; padding: 6px 8px 8px; }
+  legend { color: #9aa; font-size: 11px; padding: 0 4px; }
+  /* spectrum panel */
+  #spectrum {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: min(78%, 920px); z-index: 1000;
+    background: rgba(0,0,0,.78); border-radius: 6px; padding: 8px 10px 6px;
+    color: #ccc; font-size: 11px;
+  }
+  #sp-plot { width: 100%; height: 150px; }
+  #sp-plot svg { width: 100%; height: 100%; display: block; }
+  #sp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #sp-stats { color: #9fd; }
+  #sp-hint { color: #777; font-size: 10px; }
+  #sp-traces { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .sp-chip { padding: 1px 5px; border-radius: 3px; background: #262626; }
+  #sp-py { white-space: pre; color: #7c9; font-size: 10px; margin-top: 5px;
+    max-height: 0; overflow: hidden; transition: max-height .15s; }
+  #sp-py.open { max-height: 130px; overflow: auto; }
+  .smallbtn {
+    padding: 2px 7px; font: inherit; font-size: 10px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+  /* image cube */
+  #cube {
+    position: absolute; top: 10px; right: 10px; z-index: 1100;
+    width: 430px; background: rgba(0,0,0,.86); border-radius: 6px;
+    color: #ccc; font-size: 11px; padding: 8px 10px 10px; display: none;
+    /* drag the bottom-left-ish corner to grow the cube */
+    resize: both; overflow: auto;
+    min-width: 340px; max-width: 92vw; max-height: 94vh;
+  }
+  #cube.open { display: flex; flex-direction: column; }
+  #cube-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #cube-canvas {
+    width: 100%; height: 300px; flex: 1 1 300px; min-height: 240px;
+    display: block; margin-top: 6px; cursor: grab;
+    background: radial-gradient(ellipse at 50% 45%, #12182a 0%, #05070d 72%);
+    border-radius: 4px; touch-action: none;
+  }
+  #cube-canvas:active { cursor: grabbing; }
+  #cube label { display: block; margin-top: 6px; }
+  #cube .row { display: flex; gap: 6px; align-items: center; }
+  #cube .row label { flex: 1; margin-top: 6px; }
+  #cube-stat { color: #9fd; margin-top: 4px; min-height: 1em; }
+  #cube-hint { color: #777; font-size: 10px; margin-top: 3px; }
+  .selecting #map { cursor: crosshair; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>Tanager surface reflectance</b>
+  <div id="meta">loading store…</div>
+  <div id="warn"></div>
+
+  <label>band <span id="bandlabel"></span>
+    <input id="band" type="range" min="0" max="0" step="1" value="0" />
+  </label>
+  <label>preset
+    <select id="preset"></select>
+  </label>
+
+  <label>colormap
+    <select id="cmap"></select>
+  </label>
+
+  <label>reflectance range</label>
+  <div class="row">
+    <label>min <input id="cminNum" type="number" step="0.01" /></label>
+    <label>max <input id="cmaxNum" type="number" step="0.01" /></label>
+  </div>
+  <div class="dual" id="dual">
+    <div class="track"></div><div class="fill" id="dualfill"></div>
+    <input id="cmin" type="range" />
+    <input id="cmax" type="range" />
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <button type="button" id="autostretch" class="modebtn">Auto stretch (2–98%)</button>
+  </div>
+  <label style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+    <input id="autoband" type="checkbox" style="width:auto;" checked /> restretch on every band
+  </label>
+
+  <label>data opacity <span id="opval">100%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
+  </label>
+
+  <fieldset id="cubefs">
+    <legend>3D image cube</legend>
+    <div class="row">
+      <button type="button" id="cube-select" class="modebtn">Draw a box</button>
+      <button type="button" id="cube-here" class="modebtn">Box at centre</button>
+    </div>
+    <div id="cube-status" style="color:#777;font-size:10px;margin-top:5px;">
+      up to 256 &times; 256 cells (~7.7 km) &times; all 426 bands
+    </div>
+  </fieldset>
+
+  <label>basemap
+    <select id="basemap"></select>
+  </label>
+
+  <div id="readout">click the scene for a spectrum</div>
+</div>
+
+<div id="cube">
+  <div id="cube-head">
+    <b>image cube</b>
+    <span>
+      <button type="button" id="cube-reset" class="smallbtn">reset view</button>
+      <button type="button" id="cube-close" class="smallbtn">close</button>
+    </span>
+  </div>
+  <canvas id="cube-canvas"></canvas>
+  <div id="cube-stat">no cube loaded</div>
+  <div class="row">
+    <label>render
+      <select id="cube-mode">
+        <option value="composite">volume (composite)</option>
+        <option value="mip">max intensity</option>
+        <option value="slices">orthogonal slices</option>
+      </select>
+    </label>
+    <label>opacity <span id="cube-opval">100%</span>
+      <input id="cube-opacity" type="range" min="0.1" max="1" step="0.05" value="1" />
+    </label>
+  </div>
+  <label>threshold <span id="cube-thval"></span>
+    <input id="cube-threshold" type="range" min="0" max="1" step="0.001" value="0" />
+  </label>
+  <label id="cube-density-row">density <span id="cube-dval">0.60</span>
+    <input id="cube-density" type="range" min="0.05" max="2" step="0.05" value="0.6" />
+  </label>
+  <div id="cube-slice-rows" style="display:none;">
+    <label>band slice <span id="cube-zval"></span>
+      <input id="cube-z" type="range" min="0" max="1" step="0.002" value="0.5" />
+    </label>
+    <div class="row">
+      <label>x <input id="cube-x" type="range" min="0" max="1" step="0.005" value="0.5" /></label>
+      <label>y <input id="cube-y" type="range" min="0" max="1" step="0.005" value="0.5" /></label>
+    </div>
+  </div>
+  <fieldset id="cube-clip-rows">
+    <legend>band clip <span id="cube-cliplabel" style="color:#9fd"></span></legend>
+    <input id="cube-clip-lo" type="range" min="0" max="1" step="0.002" value="0" />
+    <input id="cube-clip-hi" type="range" min="0" max="1" step="0.002" value="1" />
+    <div class="row" style="margin-top:6px;">
+      <label style="margin:0;">top cap
+        <select id="cube-cap">
+          <option value="auto">auto (band once cut)</option>
+          <option value="none">none</option>
+          <option value="band">band at the cut</option>
+          <option value="rgb">RGB 1000 / 700 / 500 nm</option>
+        </select>
+      </label>
+      <button type="button" id="cube-scrub" class="modebtn" style="flex:0 0 auto;padding:4px 8px;">scrub ▶</button>
+    </div>
+  </fieldset>
+  <div id="cube-hint">drag to rotate &nbsp;·&nbsp; wheel to zoom &nbsp;·&nbsp; z axis is wavelength
+    &nbsp;·&nbsp; [ ] step the cut by one band &nbsp;·&nbsp; drag panel corner to enlarge</div>
+</div>
+
+<div id="spectrum">
+  <div id="sp-head">
+    <span id="sp-stats">no spectrum yet</span>
+    <span>
+      <button type="button" id="sp-py-btn" class="smallbtn">python</button>
+      <button type="button" id="sp-clear" class="smallbtn">clear</button>
+    </span>
+  </div>
+  <div id="sp-plot"></div>
+  <div id="sp-traces"></div>
+  <div id="sp-label" style="display:flex;justify-content:space-between;margin-top:3px;">
+    <span id="sp-hint">click adds a trace (3 kept) &nbsp;·&nbsp; &#8592; &#8594; change band</span>
+  </div>
+  <div id="sp-py"></div>
+</div>
+
+<script type="importmap">{"imports":{
+  "leaflet":"https://esm.sh/leaflet@1.9.4",
+  "zarrita":"https://esm.sh/zarrita@0.7.3",
+  "proj4":"https://esm.sh/proj4@2.15.0"
+}}</script>
+<script type="module">
+import L from 'leaflet'
+import proj4 from 'proj4'
+// ?v= cache-buster: python http.server serves modules cacheable, so a bare
+// refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
+import { colormapBuilder } from './zarr-maps/index.js?v=3'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
+import { ImageCube } from './cube-gl/cube-gl.js?v=2'
+import * as zarr from 'zarrita'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+const el = (id) => document.getElementById(id)
+
+/* ---------- config ----------
+   A plain Zarr v3 export of the Tanager icechunk store, reprojected to
+   EPSG:4326 at 0.00027 deg (~30 m, the native GSD) -- the same layout the EMIT
+   viewer reads, so this page is that page minus the L2A mask and plus the
+   projected-spectra click (the spectra group stays on the native UTM grid). */
+const params = new URLSearchParams(location.search)
+const REMOTE_STORE =
+  'https://d1ef9node0gwi2.cloudfront.net/tanager/tanager_mining_4326.zarr'
+const LOCAL_STORE = './tanager_mining_4326.zarr'
+// zarrita's FetchStore builds a `new URL(...)`, which throws on a relative
+// path, so absolutise before anything sees it.
+const abs = (u) => new URL(u, location.href).href
+const CANDIDATES = params.get('store')
+  ? [abs(params.get('store'))]
+  : [abs(LOCAL_STORE), REMOTE_STORE]
+let source = CANDIDATES[0]
+
+const COLORMAP_NAMES = ['viridis', 'magma', 'inferno', 'plasma', 'cividis', 'turbo',
+  'Greys', 'Greys_r', 'bone', 'RdBu', 'RdBu_r', 'Spectral', 'YlGnBu', 'YlOrRd']
+// Shortcuts for a mining scene: the visible bands, red edge, NIR, the SWIR
+// windows, and the clay / carbonate absorption features around 2.2-2.35 um.
+const PRESETS = [
+  ['blue 490 nm', 490], ['green 560 nm', 560], ['red 665 nm', 665],
+  ['red edge 705 nm', 705], ['NIR 865 nm', 865], ['iron oxide 900 nm', 900],
+  ['cirrus 1380 nm', 1380], ['SWIR 1610 nm', 1610],
+  ['clay 2160 nm', 2160], ['clay 2200 nm', 2200], ['carbonate 2340 nm', 2340],
+]
+let CLIM_RANGE = [0, 1.0]
+let clim = [0, 0.5]
+
+const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
+
+/* ---------- map + basemaps (Mercator: zarr-gl inverts per fragment) ---------- */
+const map = L.map('map', { center: [24.15, 82.64], zoom: 11, maxZoom: 17, minZoom: 2 })
+const BASEMAPS = {
+  imagery: { label: 'Esri World Imagery', build: () => L.tileLayer(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics' }) },
+  dark: { label: 'CARTO dark', build: () => L.tileLayer(
+    'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    { maxZoom: 17, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }) },
+  osm: { label: 'OpenStreetMap', build: () => L.tileLayer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }) },
+  none: { label: 'None (dark)', build: () => null },
+}
+for (const [k, v] of Object.entries(BASEMAPS)) el('basemap').add(new Option(v.label, k))
+let baseKey = params.get('basemap') in BASEMAPS ? params.get('basemap') : 'imagery'
+el('basemap').value = baseKey
+let baseLayer = null
+function setBasemap() {
+  if (baseLayer) { map.removeLayer(baseLayer); baseLayer = null }
+  baseLayer = BASEMAPS[baseKey].build()
+  if (baseLayer) { baseLayer.addTo(map); baseLayer.bringToBack() }
+}
+el('basemap').onchange = () => { baseKey = el('basemap').value; setBasemap() }
+
+/* ---------- store metadata + spectra side channel ----------
+   The rendered pyramid is EPSG:4326; `spectra/` keeps the *native* UTM 44N
+   grid, spectral-major, so a clicked spectrum is one chunk of unresampled
+   values. Clicks are projected with the proj4 string the group carries. */
+let VAR = 'surface_reflectance'
+let wavelengths = [], goodBands = [], bandIdx = 0, sceneDate = ''
+let spectraArr = null, spectraGrid = null, spectraProj = null
+let root = null
+
+async function openRoot(url) {
+  return zarr.root(new zarr.FetchStore(url))
+}
+
+/** First candidate whose root metadata answers. */
+async function resolveStore() {
+  const tried = []
+  for (const url of CANDIDATES) {
+    try {
+      const candidate = await openRoot(url)
+      await zarr.open(candidate, { kind: 'group' })
+      root = candidate
+      return url
+    } catch (err) {
+      tried.push(`${url} -> ${err.message}`)
+    }
+  }
+  throw new Error(`no store found. Tried: ${tried.join(' | ')}`)
+}
+
+async function loadMetadata() {
+  const group = await zarr.open(root, { kind: 'group' })
+  const attrs = group.attrs ?? {}
+  VAR = params.get('var') ?? attrs.variable ?? 'surface_reflectance'
+  wavelengths = attrs.wavelengths_nm ?? []
+  goodBands = attrs.good_wavelengths ?? wavelengths.map(() => 1)
+  const isoMatch = String(attrs.source ?? attrs.title ?? '').match(/(20\d{2})(\d{2})(\d{2})/)
+  if (isoMatch) sceneDate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+
+  // The store's own 2-98% hint seeds the colour limits; per-band restretch
+  // takes over from there.
+  const hint = attrs.clim_hint
+  if (Array.isArray(hint) && hint.length === 2 && hint[1] > hint[0]) {
+    clim = [Math.max(0, hint[0]), hint[1]]
+    CLIM_RANGE = [0, Math.max(1.0, Math.ceil(hint[1] * 2 * 10) / 10)]
+  }
+
+  // Level 0 bounds -> initial view.
+  const level0 = await zarr.open(await root.resolve('0'), { kind: 'group' })
+  const bounds = level0.attrs?.bounds
+  if (Array.isArray(bounds) && bounds.length === 4) {
+    map.fitBounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]], { padding: [40, 40] })
+  }
+
+  if (attrs.spectra_group) await loadSpectra(attrs.spectra_group)
+}
+
+async function loadSpectra(groupPath) {
+  try {
+    const group = await zarr.open(await root.resolve(groupPath), { kind: 'group' })
+    spectraArr = await zarr.open(await root.resolve(`${groupPath}/${VAR}`), { kind: 'array' })
+    // GDAL order: originX resX 0 originY 0 -resY, on cell *edges*.
+    const gt = String(group.attrs?.GeoTransform ?? '').trim().split(/\s+/).map(Number)
+    const [left, resX, , top, , negResY] = gt
+    const [, ny, nx] = spectraArr.shape
+    spectraGrid = { left, top, resX, resY: Math.abs(negResY), ny, nx }
+    spectraProj = proj4('EPSG:4326', group.attrs?.proj4 ?? 'EPSG:4326')
+  } catch (err) {
+    console.warn('no spectra group; click readout unavailable', err)
+    spectraArr = null
+  }
+}
+
+const clampI = (v, hi) => Math.min(hi, Math.max(0, Math.round(v)))
+
+/** Full spectrum at a click: one chunk of the spectral-major native array. */
+async function readSpectrum(latlng) {
+  if (!spectraArr) return null
+  const [x, y] = spectraProj.forward([latlng.lng, latlng.lat])
+  const { left, resX, top, resY, ny, nx } = spectraGrid
+  const col = clampI((x - left) / resX - 0.5, nx - 1)
+  const row = clampI((top - y) / resY - 0.5, ny - 1)
+  const inside = x >= left && x <= left + resX * nx &&
+    y <= top && y >= top - resY * ny
+  if (!inside) return null
+  const out = await zarr.get(spectraArr, [zarr.slice(null), row, col])
+  return { values: Array.from(out.data, Number), row, col }
+}
+
+/* ---------- data layer ---------- */
+let layer = null
+function buildLayer() {
+  layer = new ZarrGLLayer({
+    url: source, variable: VAR, tileSize: 512, maxZoom: 17,
+    clim, colors: colormapBuilder(el('cmap').value),
+    opacity: parseFloat(el('opacity').value),
+    selectors: { wavelength: bandIdx },
+  }).addTo(map)
+  layer.readyPromise.then(updateMeta, (err) => {
+    warnEl.textContent = 'layer load error (see console)'; console.error(err)
+  })
+}
+
+/** What the layer is drawing now: level 0 is ~30 m, the native GSD. */
+function currentLevelInfo() {
+  const bounds = map.getBounds()
+  const degPerPx = (bounds.getEast() - bounds.getWest()) / map.getSize().x
+  const level = layer?.source?.chooseLevel?.(degPerPx)
+  if (!level) return { degPerPx, text: '—' }
+  const metres = level.lon.step * 111320 * Math.cos((map.getCenter().lat * Math.PI) / 180)
+  const state = degPerPx < level.lon.step ? 'upsampled'
+    : degPerPx > level.lon.step * 1.5 ? 'downsampled' : '1:1'
+  return { degPerPx, text: `level ${level.path} (~${metres.toFixed(0)} m) · ${state}` }
+}
+function updateMeta() {
+  const levels = layer?.source?.levels?.length ?? 0
+  const info = currentLevelInfo()
+  metaEl.innerHTML =
+    `${VAR} · ${wavelengths.length} bands · ${sceneDate}<br>` +
+    `EPSG:4326 · ${levels} levels · ${info.text}`
+  metaEl.title =
+    'Rendered pyramid: 0.00027 deg (~30 m) EPSG:4326, nearest-resampled from ' +
+    'the 30 m UTM 44N source. Coarser levels are NaN-aware 2x2 means. Clicked ' +
+    'spectra come from the native UTM grid and are not resampled.'
+}
+map.on('zoomend', updateMeta)
+
+/* ---------- band control ---------- */
+function bandText(i) {
+  const nm = wavelengths[i]
+  const flagged = goodBands[i] === 0 ? ' <span class="flagged">(flagged)</span>' : ''
+  return nm === undefined ? '' : `${nm.toFixed(1)} nm · idx ${i}${flagged}`
+}
+function setBand(i, { fromSlider = false } = {}) {
+  bandIdx = Math.min(wavelengths.length - 1, Math.max(0, i))
+  if (!fromSlider) el('band').value = bandIdx
+  el('bandlabel').innerHTML = bandText(bandIdx)
+  layer?.updateSelectors({ wavelength: bandIdx })
+  scheduleStretch()
+  updateMeta(); renderSpectra(); updateReadout()
+}
+function nearestBand(nm) {
+  let best = 0, bestD = Infinity
+  wavelengths.forEach((w, i) => { const d = Math.abs(w - nm); if (d < bestD) { bestD = d; best = i } })
+  return best
+}
+el('band').oninput = () => setBand(+el('band').value, { fromSlider: true })
+el('preset').onchange = () => {
+  const nm = parseFloat(el('preset').value)
+  if (Number.isFinite(nm)) setBand(nearestBand(nm))
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+  setBand(bandIdx + (e.key === 'ArrowRight' ? 1 : -1))
+})
+
+/* ---------- colormap / opacity ---------- */
+el('cmap').onchange = () => {
+  const colors = colormapBuilder(el('cmap').value)
+  layer?.updateStyle({ colors })
+  cube?.setColormap(colors)
+  renderClimUI()
+}
+el('opacity').oninput = () => {
+  el('opval').textContent = `${Math.round(parseFloat(el('opacity').value) * 100)}%`
+  layer?.updateStyle({ opacity: parseFloat(el('opacity').value) })
+}
+
+/* ---------- min/max ---------- */
+const cmin = el('cmin'), cmax = el('cmax'), cminNum = el('cminNum'), cmaxNum = el('cmaxNum')
+// Slider granularity follows the range: reflectance percentiles in the SWIR can
+// live around 0.005-0.06, where a fixed 0.01 step is a third of the spread.
+let STEP = 0.01
+const stepFor = (span) => Math.max(0.0001, Math.round((span / 200) * 10000) / 10000)
+const decimals = () => (STEP >= 0.01 ? 2 : STEP >= 0.001 ? 3 : 4)
+const clampC = (v) => Math.max(CLIM_RANGE[0], Math.min(CLIM_RANGE[1], v))
+function cssGradient(name) {
+  const cols = colormapBuilder(name), n = cols.length
+  return `linear-gradient(to right, ${cols.map((c, i) => {
+    const s = (c[0] <= 1 && c[1] <= 1 && c[2] <= 1) ? 255 : 1
+    return `rgb(${Math.round(c[0] * s)},${Math.round(c[1] * s)},${Math.round(c[2] * s)}) ${(i / (n - 1) * 100).toFixed(1)}%`
+  }).join(',')})`
+}
+function renderClimUI() {
+  const [lo, hi] = clim, span = CLIM_RANGE[1] - CLIM_RANGE[0], fill = el('dualfill')
+  const d = decimals()
+  cmin.value = lo; cmax.value = hi; cminNum.value = lo.toFixed(d); cmaxNum.value = hi.toFixed(d)
+  fill.style.left = `${((lo - CLIM_RANGE[0]) / span) * 100}%`
+  fill.style.width = `${((hi - lo) / span) * 100}%`
+  fill.style.background = cssGradient(el('cmap').value)
+}
+function setClim(lo, hi) {
+  lo = clampC(lo); hi = clampC(hi)
+  if (lo > hi) [lo, hi] = [hi, lo]
+  clim = [lo, hi]; renderClimUI(); layer?.updateStyle({ clim })
+}
+function initClim() {
+  STEP = stepFor(CLIM_RANGE[1] - CLIM_RANGE[0])
+  for (const s of [cmin, cmax]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
+  for (const s of [cminNum, cmaxNum]) { s.min = CLIM_RANGE[0]; s.max = CLIM_RANGE[1]; s.step = STEP }
+  renderClimUI()
+}
+cmin.oninput = () => setClim(+cmin.value, +cmax.value)
+cmax.oninput = () => setClim(+cmin.value, +cmax.value)
+cminNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+cmaxNum.onchange = () => setClim(+cminNum.value, +cmaxNum.value)
+
+/* Reflectance magnitude is a property of the band, not of the scene, so the
+ * range follows the band while the colormap deliberately does not. Percentiles
+ * come from the coarsest level (one small read per band). */
+const stretchCache = new Map()
+async function bandStretch(i) {
+  if (stretchCache.has(i)) return stretchCache.get(i)
+  const levels = layer?.source?.levels
+  if (!levels?.length) return null
+  const coarse = levels[levels.length - 1]
+  const chunk = await zarr.get(coarse.array, [i, zarr.slice(null), zarr.slice(null)])
+  const values = Array.from(chunk.data, Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (!values.length) return null
+  const at = (p) => values[Math.min(values.length - 1, Math.floor(p * (values.length - 1)))]
+  const range = [Math.max(0, at(0.02)), at(0.98)]
+  stretchCache.set(i, range)
+  return range
+}
+function applyStretch([lo, hi]) {
+  // Bands flagged bad are a single constant everywhere -- keep whatever the
+  // last real band set rather than collapsing the ramp.
+  if (hi - lo < 1e-4) return
+  // Retune the slider span to the band: a SWIR band whose 98th percentile is
+  // 0.012 is unadjustable on a 0..1 slider.
+  const top = Math.max(0.02, Math.ceil(hi * 1.6 * 1000) / 1000)
+  CLIM_RANGE = [Math.min(0, Math.floor(lo * 1000) / 1000), top]
+  initClim()
+  setClim(lo, hi)
+}
+
+el('autostretch').onclick = async () => {
+  const btn = el('autostretch'); const old = btn.textContent
+  btn.textContent = 'reading…'; btn.disabled = true
+  try {
+    const range = await bandStretch(bandIdx)
+    if (range) applyStretch(range)
+  } catch (err) { console.error(err) } finally { btn.textContent = old; btn.disabled = false }
+}
+
+// Dragging the band slider fires continuously; only the band it settles on is
+// worth a read, and only if it is still the current one when the read lands.
+let stretchTimer = null
+function scheduleStretch() {
+  if (!el('autoband').checked) return
+  clearTimeout(stretchTimer)
+  stretchTimer = setTimeout(async () => {
+    const want = bandIdx
+    try {
+      const range = await bandStretch(want)
+      if (range && want === bandIdx && el('autoband').checked) applyStretch(range)
+    } catch (err) { console.error(err) }
+  }, stretchCache.has(bandIdx) ? 0 : 120)
+}
+el('autoband').onchange = scheduleStretch
+
+/* ---------- spectrum panel ---------- */
+const TRACE_COLORS = ['#60a5fa', '#f4a582', '#a3e635']
+let traces = []
+let clickSeq = 0
+
+function renderSpectra() {
+  const box = el('sp-plot')
+  if (!traces.length) { box.innerHTML = ''; el('sp-traces').innerHTML = ''; return }
+  const W = 900, H = 150, padL = 42, padR = 8, padT = 8, padB = 20
+  const finite = traces.flatMap((t) => t.values.filter(Number.isFinite))
+  const lo = Math.min(...finite), hi = Math.max(...finite)
+  const span = (hi - lo) || 1
+  const wl0 = wavelengths[0], wl1 = wavelengths[wavelengths.length - 1]
+  const X = (nm) => padL + (nm - wl0) / (wl1 - wl0) * (W - padL - padR)
+  const Y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / span)
+
+  const paths = traces.map((t, ti) => {
+    let d = '', pen = false
+    t.values.forEach((v, i) => {
+      if (Number.isFinite(v)) { d += `${pen ? 'L' : 'M'}${X(wavelengths[i]).toFixed(1)} ${Y(v).toFixed(1)} `; pen = true }
+      else pen = false
+    })
+    return `<path d="${d}" fill="none" stroke="${TRACE_COLORS[ti % TRACE_COLORS.length]}" stroke-width="1.3"/>`
+  }).join('')
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + f * span)
+  const grid = yTicks.map((v) =>
+    `<line x1="${padL}" y1="${Y(v).toFixed(1)}" x2="${W - padR}" y2="${Y(v).toFixed(1)}" stroke="#334" stroke-width="0.5"/>` +
+    `<text x="${padL - 4}" y="${(Y(v) + 3).toFixed(1)}" fill="#889" font-size="9" text-anchor="end">${v.toFixed(2)}</text>`
+  ).join('')
+  const xTicks = [500, 1000, 1500, 2000, 2500].filter((nm) => nm >= wl0 && nm <= wl1)
+  const xAxis = xTicks.map((nm) =>
+    `<line x1="${X(nm).toFixed(1)}" y1="${padT}" x2="${X(nm).toFixed(1)}" y2="${H - padB}" stroke="#243" stroke-width="0.5" stroke-dasharray="2 3"/>` +
+    `<text x="${X(nm).toFixed(1)}" y="${H - padB + 12}" fill="#889" font-size="9" text-anchor="middle">${nm}</text>`
+  ).join('')
+
+  let flagged = ''
+  for (let i = 0; i < goodBands.length; i++) {
+    if (goodBands[i] === 0) {
+      flagged += `<rect x="${X(wavelengths[i]).toFixed(1)}" y="${H - padB - 3}" width="1.4" height="3" fill="#fc6" opacity="0.7"/>`
+    }
+  }
+  const cur = wavelengths[bandIdx]
+  const marker = Number.isFinite(cur)
+    ? `<line x1="${X(cur).toFixed(1)}" y1="${padT}" x2="${X(cur).toFixed(1)}" y2="${H - padB}" stroke="#fd9" stroke-width="1"/>` +
+      traces.map((t, ti) => Number.isFinite(t.values[bandIdx])
+        ? `<circle cx="${X(cur).toFixed(1)}" cy="${Y(t.values[bandIdx]).toFixed(1)}" r="2.6" fill="${TRACE_COLORS[ti % TRACE_COLORS.length]}"/>`
+        : '').join('')
+    : ''
+
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `${grid}${xAxis}${flagged}${paths}${marker}` +
+    `<text x="${W - padR}" y="${H - padB + 12}" fill="#667" font-size="9" text-anchor="end">wavelength (nm)</text></svg>`
+
+  el('sp-traces').innerHTML = traces.map((t, ti) =>
+    `<span class="sp-chip" style="color:${TRACE_COLORS[ti % TRACE_COLORS.length]}">` +
+    `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)} · px ${t.col},${t.row}</span>`).join('')
+
+  const last = traces[traces.length - 1]
+  const lastFinite = last.values.filter(Number.isFinite)
+  el('sp-stats').textContent = lastFinite.length
+    ? `${lastFinite.length}/${last.values.length} bands · min ${Math.min(...lastFinite).toFixed(3)}` +
+      ` · max ${Math.max(...lastFinite).toFixed(3)}` +
+      ` · at ${cur?.toFixed(1)} nm: ${Number.isFinite(last.values[bandIdx]) ? last.values[bandIdx].toFixed(4) : 'no data'}`
+    : 'no data at that pixel'
+}
+
+function pythonSnippet() {
+  const url = source.replace(/\/$/, '')
+  const t = traces[traces.length - 1]
+  if (!t) return ''
+  return `import xarray as xr\n` +
+    `# rendered pyramid (EPSG:4326): group "0" = full res, band-major\n` +
+    `viz = xr.open_zarr("${url}", group="0")["${VAR}"]\n` +
+    `# native-grid spectra (UTM 44N), spectral-major: one chunk per spectrum\n` +
+    `spec = xr.open_zarr("${url}", group="spectra")["${VAR}"]\n` +
+    `spec.isel(y=${t.row}, x=${t.col}).plot()   # ${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}`
+}
+
+function updateReadout() {
+  const t = traces[traces.length - 1]
+  if (!t) return
+  const v = t.values[bandIdx]
+  readoutEl.textContent = `${t.lat.toFixed(4)}, ${t.lon.toFixed(4)}: ` +
+    (Number.isFinite(v) ? `${v.toFixed(4)} @ ${wavelengths[bandIdx].toFixed(1)} nm` : 'no data')
+}
+
+map.on('click', async (e) => {
+  if (selecting) return          // the box drag ends with a click; not a spectrum
+  const where = `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
+  const seq = ++clickSeq
+  readoutEl.textContent = `${where}: reading spectrum…`
+  try {
+    const result = await readSpectrum(e.latlng)
+    if (seq !== clickSeq) return
+    if (!result) { readoutEl.textContent = `${where}: outside the scene`; return }
+    if (!result.values.some(Number.isFinite)) {
+      readoutEl.textContent = `${where}: no data at that pixel`; return
+    }
+    traces.push({ lat: e.latlng.lat, lon: e.latlng.lng, ...result })
+    if (traces.length > TRACE_COLORS.length) traces.shift()
+    renderSpectra(); updateReadout()
+    if (el('sp-py').classList.contains('open')) el('sp-py').textContent = pythonSnippet()
+  } catch (err) {
+    console.error(err)
+    if (seq === clickSeq) readoutEl.textContent = `${where}: spectrum failed (see console)`
+  }
+})
+
+el('sp-clear').onclick = () => { traces = []; renderSpectra(); el('sp-stats').textContent = 'no spectrum yet' }
+el('sp-py-btn').onclick = () => {
+  const box = el('sp-py')
+  box.classList.toggle('open')
+  box.textContent = box.classList.contains('open') ? pythonSnippet() : ''
+}
+
+/* ---------- 3D image cube ----------
+ * Draw a box, and the spectral-major copy gives up that box for all 426 bands
+ * at once: `spectra/surface_reflectance` is chunked (426, 16, 16). The spectra
+ * grid is UTM, so map bounds are projected before windowing; on a ~20 km scene
+ * the latlng rectangle vs UTM rectangle mismatch is under a cell.
+ */
+// Cells per side: 256 is WebGL2's guaranteed floor for a 3D texture axis. The
+// 426-band axis exceeds it on GPUs at that floor; cube-gl thins bands to fit.
+const MAX_CUBE = 256
+let cube = null, selecting = false, cubeBox = null, cubeVolume = null
+
+/** Map bounds -> a cell window on the (UTM) spectra grid, capped and clamped. */
+function cellWindow(bounds) {
+  if (!spectraGrid) return null
+  const { left, resX, top, resY, ny, nx } = spectraGrid
+  const corners = [
+    [bounds.getWest(), bounds.getSouth()], [bounds.getWest(), bounds.getNorth()],
+    [bounds.getEast(), bounds.getSouth()], [bounds.getEast(), bounds.getNorth()],
+  ].map(([lng, lat]) => spectraProj.forward([lng, lat]))
+  const xs = corners.map((p) => p[0]), ys = corners.map((p) => p[1])
+  let c0 = Math.floor((Math.min(...xs) - left) / resX)
+  let c1 = Math.ceil((Math.max(...xs) - left) / resX)
+  let r0 = Math.floor((top - Math.max(...ys)) / resY)
+  let r1 = Math.ceil((top - Math.min(...ys)) / resY)
+  c0 = Math.max(0, Math.min(nx - 1, c0)); c1 = Math.max(c0 + 1, Math.min(nx, c1))
+  r0 = Math.max(0, Math.min(ny - 1, r0)); r1 = Math.max(r0 + 1, Math.min(ny, r1))
+  // Keep the centre, trim the edges, rather than refusing a large box.
+  let clipped = false
+  if (c1 - c0 > MAX_CUBE) { const m = (c0 + c1) >> 1; c0 = m - (MAX_CUBE >> 1); c1 = c0 + MAX_CUBE; clipped = true }
+  if (r1 - r0 > MAX_CUBE) { const m = (r0 + r1) >> 1; r0 = m - (MAX_CUBE >> 1); r1 = r0 + MAX_CUBE; clipped = true }
+  return { r0, r1, c0, c1, clipped }
+}
+
+/** Cell window -> its true footprint (UTM corners back to latlng). */
+function windowBounds({ r0, r1, c0, c1 }) {
+  const { left, resX, top, resY } = spectraGrid
+  const sw = spectraProj.inverse([left + c0 * resX, top - r1 * resY])
+  const ne = spectraProj.inverse([left + c1 * resX, top - r0 * resY])
+  return L.latLngBounds([sw[1], sw[0]], [ne[1], ne[0]])
+}
+
+function percentiles(data, lo, hi) {
+  const stride = Math.max(1, Math.floor(data.length / 400000))
+  const sample = []
+  for (let i = 0; i < data.length; i += stride) {
+    const v = data[i]
+    if (Number.isFinite(v)) sample.push(v)
+  }
+  if (!sample.length) return null
+  sample.sort((a, b) => a - b)
+  const at = (p) => sample[Math.min(sample.length - 1, Math.floor(p * (sample.length - 1)))]
+  return [at(lo), at(hi)]
+}
+
+function ensureCube() {
+  if (cube) return cube
+  cube = new ImageCube(el('cube-canvas'))
+  cube.setColormap(colormapBuilder(el('cmap').value))
+  // The panel corner is draggable (CSS resize), so redraw when the canvas moves.
+  new ResizeObserver(() => cube?.draw()).observe(el('cube-canvas'))
+  return cube
+}
+
+async function loadCube(bounds) {
+  if (!spectraArr) { el('cube-status').textContent = 'no spectra group in this store'; return }
+  const win = cellWindow(bounds)
+  if (!win) return
+  const { r0, r1, c0, c1 } = win
+  const nr = r1 - r0, nc = c1 - c0
+  const chunk = spectraArr.chunks ?? [426, 16, 16]
+  const nChunks = Math.ceil(nr / chunk[1]) * Math.ceil(nc / chunk[2]) *
+    Math.ceil(spectraArr.shape[0] / chunk[0])
+  if (cubeBox) { map.removeLayer(cubeBox); cubeBox = null }
+  cubeBox = L.rectangle(windowBounds(win),
+    { color: '#38bdf8', weight: 1.5, fill: false, dashArray: '4 3' }).addTo(map)
+
+  el('cube').classList.add('open')
+  el('cube-stat').textContent = `reading ${nr} x ${nc} cells x ${spectraArr.shape[0]} bands ` +
+    `(${nChunks} chunk${nChunks === 1 ? '' : 's'})…`
+  const started = performance.now()
+  let out
+  try {
+    out = await zarr.get(spectraArr, [zarr.slice(null), zarr.slice(r0, r1), zarr.slice(c0, c1)])
+  } catch (err) {
+    console.error(err)
+    el('cube-stat').textContent = 'cube read failed (see console)'
+    return
+  }
+  const seconds = (performance.now() - started) / 1000
+
+  let [nz, ny, nx] = out.shape
+  let data = out.data instanceof Float32Array ? out.data : Float32Array.from(out.data, Number)
+  const view = ensureCube()
+  // WebGL2 only guarantees 256 per 3D-texture axis; where a GPU is at that
+  // floor, thin the band axis rather than refusing to draw.
+  let bandStep = 1
+  if (nz > view.maxDim) {
+    bandStep = Math.ceil(nz / view.maxDim)
+    const kept = Math.floor(nz / bandStep)
+    const thinned = new Float32Array(kept * ny * nx)
+    for (let z = 0; z < kept; z++) {
+      thinned.set(data.subarray(z * bandStep * ny * nx, (z * bandStep + 1) * ny * nx), z * ny * nx)
+    }
+    data = thinned; nz = kept
+  }
+
+  const range = percentiles(data, 0.02, 0.98) ?? [0, 0.5]
+  const full = percentiles(data, 0, 0.999) ?? range
+  // Max intensity needs its own limits: every ray reports the largest value it
+  // met, so scaling those to the whole volume's percentiles saturates the frame.
+  const maxImage = new Float32Array(nx * ny).fill(-Infinity)
+  for (let z = 0; z < nz; z++) {
+    const plane = z * ny * nx
+    for (let i = 0; i < ny * nx; i++) {
+      const v = data[plane + i]
+      if (v > maxImage[i]) maxImage[i] = v
+    }
+  }
+  const rangeMip = percentiles(maxImage, 0.02, 0.98) ?? range
+  cubeVolume = { nx, ny, nz, bandStep, r0, c0, range, rangeMip, full }
+  view.setVolume(data, { nx, ny, nz })
+  view.setCapImage(buildCapImage(data, nx, ny, nz, bandStep), { nx, ny })
+  view.setStyle({
+    clim: el('cube-mode').value === 'mip' ? rangeMip : range,
+    threshold: -Infinity,
+    cap: effectiveCap(),
+    crop: { min: [0, 0, 0], max: [1, 1, 1] },
+  })
+  stopScrub()
+  for (const [id, value] of [['cube-clip-lo', 0], ['cube-clip-hi', 1]]) {
+    el(id).step = 1 / (nz - 1)
+    el(id).value = value
+  }
+  applyClip()
+
+  const thr = el('cube-threshold')
+  thr.min = Math.min(0, full[0]); thr.max = full[1]
+  thr.step = Math.max(0.0005, (full[1] - Math.min(0, full[0])) / 200)
+  thresholdOff()
+
+  const km = (nc * spectraGrid.resX / 1000).toFixed(1)
+  const mb = (data.length * 4 / 1e6).toFixed(0)
+  el('cube-stat').innerHTML =
+    `${nx} &times; ${ny} cells (~${km} km) &times; ${nz} bands` +
+    `${bandStep > 1 ? ` (every ${bandStep}${bandStep === 2 ? 'nd' : 'th'})` : ''}` +
+    ` · ${mb} MB · ${seconds.toFixed(1)} s` +
+    `${win.clipped ? ' · <span style="color:#fc6">box trimmed to ' + MAX_CUBE + ' cells</span>' : ''}`
+  el('cube-status').innerHTML = `cube: ${nx} &times; ${ny} &times; ${nz}`
+  updateSliceLabels()
+}
+
+/* Box drawing: Leaflet's own box zoom owns shift-drag, so selection is a mode
+ * button instead, with panning suspended while it is armed. */
+function setSelecting(on) {
+  selecting = on
+  el('cube-select').classList.toggle('active', on)
+  document.body.classList.toggle('selecting', on)
+  if (on) { map.dragging.disable(); map.boxZoom.disable() }
+  else { map.dragging.enable(); map.boxZoom.enable() }
+}
+el('cube-select').onclick = () => setSelecting(!selecting)
+el('cube-here').onclick = () => {
+  if (!spectraGrid) return
+  const c = map.getCenter()
+  const halfM = (MAX_CUBE * 0.75 / 2) * spectraGrid.resX     // metres
+  const dLat = halfM / 111320
+  const dLon = halfM / (111320 * Math.cos(c.lat * Math.PI / 180))
+  loadCube(L.latLngBounds([c.lat - dLat, c.lng - dLon], [c.lat + dLat, c.lng + dLon]))
+}
+
+let dragStart = null, dragRect = null
+map.on('mousedown', (e) => {
+  if (!selecting) return
+  dragStart = e.latlng
+  dragRect = L.rectangle(L.latLngBounds(e.latlng, e.latlng),
+    { color: '#38bdf8', weight: 1, fill: true, fillOpacity: 0.08 }).addTo(map)
+})
+map.on('mousemove', (e) => {
+  if (dragRect) dragRect.setBounds(L.latLngBounds(dragStart, e.latlng))
+})
+map.on('mouseup', (e) => {
+  if (!dragRect) return
+  const bounds = L.latLngBounds(dragStart, e.latlng)
+  map.removeLayer(dragRect); dragRect = null; dragStart = null
+  setSelecting(false)
+  // A stray click, not a drag: ignore rather than load a one-cell cube.
+  if (map.latLngToContainerPoint(bounds.getNorthEast())
+    .distanceTo(map.latLngToContainerPoint(bounds.getSouthWest())) < 12) return
+  loadCube(bounds)
+})
+
+/** Cube band index (which may be thinned) -> wavelength. */
+function cubeNm(fraction) {
+  if (!cubeVolume) return undefined
+  const idx = Math.min(cubeVolume.nz - 1, Math.max(0, Math.round(fraction * (cubeVolume.nz - 1))))
+  return wavelengths[idx * cubeVolume.bandStep]
+}
+
+function updateSliceLabels() {
+  const s = cube?.style?.slices
+  if (!s || !cubeVolume) return
+  const nm = cubeNm(s.z)
+  el('cube-zval').textContent = nm === undefined ? '' : `${nm.toFixed(1)} nm`
+}
+
+/** 'auto' cap: nothing on an uncut cube, the band image once the top is cut. */
+function effectiveCap() {
+  const sel = el('cube-cap').value
+  if (sel !== 'auto') return sel
+  const hi = parseFloat(el('cube-clip-hi').value)
+  const lo = parseFloat(el('cube-clip-lo').value)
+  return Math.min(1, Math.max(lo, hi)) < 0.999 ? 'band' : 'none'
+}
+/* Clipping the band axis is HyperCoast's `widget="plane"`: the cube is cut at a
+ * wavelength and what you see is the cut. Dragging the top edge walks the cut
+ * through the spectrum, and the auto cap paints the exposed face with that
+ * band's image. */
+function applyClip() {
+  if (!cube) return
+  let lo = parseFloat(el('cube-clip-lo').value)
+  let hi = parseFloat(el('cube-clip-hi').value)
+  if (lo > hi) [lo, hi] = [hi, lo]
+  cube.setStyle({ crop: { min: [0, 0, lo], max: [1, 1, hi] }, cap: effectiveCap() })
+  const loNm = cubeNm(lo), hiNm = cubeNm(hi)
+  el('cube-cliplabel').textContent = loNm === undefined ? ''
+    : (hi - lo < 0.004 ? `${hiNm.toFixed(1)} nm`
+      : `${loNm.toFixed(1)} – ${hiNm.toFixed(1)} nm`)
+}
+el('cube-clip-lo').oninput = applyClip
+el('cube-clip-hi').oninput = applyClip
+// [ and ] walk the cut down/up one band at a time.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '[' && e.key !== ']') return
+  if (!cubeVolume || !el('cube').classList.contains('open')) return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+  const step = 1 / (cubeVolume.nz - 1)
+  const s = el('cube-clip-hi')
+  s.value = Math.min(1, Math.max(parseFloat(el('cube-clip-lo').value),
+    parseFloat(s.value) + (e.key === ']' ? step : -step)))
+  applyClip()
+})
+
+/** Walk the cut through the spectrum, one band per frame. */
+let scrubTimer = null
+function stopScrub() {
+  if (scrubTimer) clearInterval(scrubTimer)
+  scrubTimer = null
+  el('cube-scrub').textContent = 'scrub ▶'
+  el('cube-scrub').classList.remove('active')
+}
+el('cube-scrub').onclick = () => {
+  if (scrubTimer) { stopScrub(); return }
+  if (!cubeVolume) return
+  el('cube-scrub').textContent = 'stop ■'
+  el('cube-scrub').classList.add('active')
+  const step = 1 / (cubeVolume.nz - 1)
+  scrubTimer = setInterval(() => {
+    let hi = parseFloat(el('cube-clip-hi').value) + step
+    if (hi > 1) hi = parseFloat(el('cube-clip-lo').value)
+    el('cube-clip-hi').value = hi
+    applyClip()
+  }, 60)
+}
+
+/* The RGB cap, HyperCoast's `rgb_wavelengths` with `rgb_gamma`: three bands,
+ * each stretched on its own percentiles, then gamma-brightened. */
+const CAP_RGB_NM = [1000, 700, 500]
+const CAP_GAMMA = 2
+function buildCapImage(data, nx, ny, nz, bandStep) {
+  const planes = CAP_RGB_NM.map((nm) =>
+    Math.min(nz - 1, Math.round(nearestBand(nm) / bandStep)))
+  const rgba = new Uint8Array(nx * ny * 4).fill(255)
+  planes.forEach((z, channel) => {
+    const plane = data.subarray(z * ny * nx, (z + 1) * ny * nx)
+    const range = percentiles(plane, 0.02, 0.98) ?? [0, 1]
+    const span = Math.max(1e-9, range[1] - range[0])
+    for (let i = 0; i < ny * nx; i++) {
+      const v = plane[i]
+      if (!Number.isFinite(v)) { rgba[i * 4 + 3] = 0; continue }
+      const t = Math.min(1, Math.max(0, (v - range[0]) / span))
+      rgba[i * 4 + channel] = Math.round(255 * Math.pow(t, 1 / CAP_GAMMA))
+    }
+  })
+  return rgba
+}
+el('cube-cap').onchange = () => cube?.setStyle({ cap: effectiveCap() })
+
+el('cube-mode').onchange = () => {
+  const mode = el('cube-mode').value
+  const clim = mode === 'mip' ? cubeVolume?.rangeMip : cubeVolume?.range
+  cube?.setStyle(clim ? { mode, clim } : { mode })
+  el('cube-slice-rows').style.display = mode === 'slices' ? 'block' : 'none'
+  el('cube-density-row').style.display = mode === 'composite' ? 'block' : 'none'
+  // Clipping cuts the ray-marched box; the slice planes are their own geometry.
+  el('cube-clip-rows').style.display = mode === 'slices' ? 'none' : 'block'
+  // A threshold that was hiding weak samples along a ray punches holes straight
+  // through a slice plane, so slicing starts from the whole plane.
+  if (mode === 'slices') { stopScrub(); thresholdOff() }
+}
+el('cube-opacity').oninput = () => {
+  const v = parseFloat(el('cube-opacity').value)
+  el('cube-opval').textContent = `${Math.round(v * 100)}%`
+  cube?.setStyle({ opacity: v })
+}
+el('cube-density').oninput = () => {
+  const v = parseFloat(el('cube-density').value)
+  el('cube-dval').textContent = v.toFixed(2)
+  cube?.setStyle({ density: v })
+}
+function thresholdOff() {
+  const thr = el('cube-threshold')
+  thr.value = thr.min
+  el('cube-thval').textContent = 'off'
+  cube?.setStyle({ threshold: -Infinity })
+}
+el('cube-threshold').oninput = () => {
+  const v = parseFloat(el('cube-threshold').value)
+  const off = v <= parseFloat(el('cube-threshold').min) + 1e-9
+  el('cube-thval').textContent = off ? 'off' : v.toFixed(3)
+  cube?.setStyle({ threshold: off ? -Infinity : v })
+}
+for (const axis of ['x', 'y', 'z']) {
+  el(`cube-${axis}`).oninput = () => {
+    cube?.setStyle({ slices: { [axis]: parseFloat(el(`cube-${axis}`).value) } })
+    if (axis === 'z') updateSliceLabels()
+  }
+}
+el('cube-reset').onclick = () => cube?.setView({ yaw: -0.9, pitch: 0.5, dist: 4.2 })
+el('cube-close').onclick = () => {
+  el('cube').classList.remove('open')
+  if (cubeBox) { map.removeLayer(cubeBox); cubeBox = null }
+}
+window.addEventListener('resize', () => cube?.draw())
+
+/* ---------- boot ---------- */
+for (const name of COLORMAP_NAMES) el('cmap').add(new Option(name, name))
+el('cmap').value = params.get('cmap') ?? 'viridis'
+el('preset').add(new Option('—', ''))
+for (const [label, nm] of PRESETS) el('preset').add(new Option(label, nm))
+
+;(async () => {
+  try {
+    source = await resolveStore()
+    await loadMetadata()
+    el('band').max = Math.max(0, wavelengths.length - 1)
+    const startNm = parseFloat(params.get('nm') ?? '')
+    bandIdx = Number.isFinite(startNm) ? nearestBand(startNm)
+      : Math.min(wavelengths.length - 1, +(params.get('band') ?? nearestBand(865)))
+    el('band').value = bandIdx
+    el('bandlabel').innerHTML = bandText(bandIdx)
+    // An explicit ?clim=lo,hi is a deliberate choice, so it turns the per-band
+    // restretch off rather than being overwritten by it a moment later.
+    const asked = (params.get('clim') ?? '').split(',').map(Number)
+    if (asked.length === 2 && asked.every(Number.isFinite) && asked[1] > asked[0]) {
+      CLIM_RANGE = [Math.min(0, asked[0]), Math.max(CLIM_RANGE[1], asked[1])]
+      clim = asked
+      el('autoband').checked = false
+    }
+    initClim(); setBasemap(); buildLayer()
+    scheduleStretch()
+    el('cube-mode').onchange()      // sync which cube controls are visible
+  } catch (err) {
+    metaEl.textContent = 'failed to open store'
+    warnEl.innerHTML = `${String(err.message ?? err)}<br><br>` +
+      'The 1 GB store lives outside the repo. Serve a copy next to this page ' +
+      '(a symlink works), or point at one with <code>?store=&lt;url&gt;</code>.'
+    console.error(err)
+  }
+})()
+
+window.__tanager = { get layer() { return layer }, get map() { return map },
+  get source() { return source }, get wavelengths() { return wavelengths },
+  get traces() { return traces }, get bandIdx() { return bandIdx } }
+window.__leafletMap = map
+</script>
+</body>
+</html>
