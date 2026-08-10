@@ -99,6 +99,9 @@
 <div id="map"></div>
 <div id="panel">
   <b>EMIT L2A surface reflectance</b>
+  <label>scene
+    <select id="scene"></select>
+  </label>
   <div id="meta">loading store…</div>
   <div id="warn"></div>
 
@@ -260,9 +263,17 @@ const el = (id) => document.getElementById(id)
    orthorectified grid (0.00054223 deg, ~60 m) built from the granule's GLT --
    delivered posting, values copied not interpolated. */
 const params = new URLSearchParams(location.search)
+// Known scenes in the bucket; `?scene=` picks one, `?store=` overrides with a
+// full URL. Reloading on change keeps every control's state scene-consistent.
+const SCENES = {
+  emit_20240630_rfl_60m: { label: '2024-06-30 · Amazon (Brazil)' },
+  emit_20250327_rfl_60m: { label: '2025-03-27 · Cape Lookout (NC)' },
+}
+const DEFAULT_SCENE = 'emit_20240630_rfl_60m'
+const sceneKey = SCENES[params.get('scene')] ? params.get('scene') : DEFAULT_SCENE
 const REMOTE_STORE =
-  'https://d1ef9node0gwi2.cloudfront.net/ice/emit_20250327_rfl_60m.icechunk'
-const LOCAL_STORE = './emit_20250327_rfl_60m.icechunk'
+  `https://d1ef9node0gwi2.cloudfront.net/ice/${sceneKey}.icechunk`
+const LOCAL_STORE = `./${sceneKey}.icechunk`
 // zarrita's FetchStore and icechunk-js both build a `new URL(...)`, which throws
 // on a relative path, so absolutise before anything sees it.
 const abs = (u) => new URL(u, location.href).href
@@ -286,8 +297,17 @@ let clim = [0, 0.5]
 
 const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
 
+for (const [k, v] of Object.entries(SCENES)) el('scene').add(new Option(v.label, k))
+el('scene').value = sceneKey
+el('scene').onchange = () => {
+  const next = new URLSearchParams(location.search)
+  next.set('scene', el('scene').value)
+  next.delete('store'); next.delete('clim'); next.delete('band'); next.delete('nm')
+  location.search = next.toString()
+}
+
 /* ---------- map + basemaps (Mercator: zarr-gl inverts per fragment) ---------- */
-const map = L.map('map', { center: [34.36, -76.33], zoom: 9, maxZoom: 15, minZoom: 2 })
+const map = L.map('map', { center: [-2.59, -57.1], zoom: 10, maxZoom: 15, minZoom: 2 })
 const BASEMAPS = {
   imagery: { label: 'Esri World Imagery', build: () => L.tileLayer(
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -667,7 +687,7 @@ function pythonSnippet() {
   if (!t) return ''
   return `import icechunk, xarray as xr\n` +
     `repo = icechunk.Repository.open(icechunk.s3_storage(\n` +
-    `    bucket="swot-zarr", prefix="ice/emit_20250327_rfl_60m.icechunk",\n` +
+    `    bucket="swot-zarr", prefix="ice/${sceneKey}.icechunk",\n` +
     `    region="us-west-2", from_env=True))\n` +
     `store = repo.readonly_session("main").store\n` +
     `viz  = xr.open_zarr(store, group="0", consolidated=False)["${VAR}"]   # ~60 m, band-major\n` +
