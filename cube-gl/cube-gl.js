@@ -410,9 +410,12 @@ export class ImageCube {
   }
 
   setStyle(patch) {
+    // Merge nested objects *before* assigning: Object.assign first would replace
+    // style.slices with a partial {x} and lose y/z (NaN planes -> only the last
+    // touched slice visible).
+    if (patch.slices) patch = { ...patch, slices: { ...this.style.slices, ...patch.slices } }
+    if (patch.crop) patch = { ...patch, crop: { ...this.style.crop, ...patch.crop } }
     Object.assign(this.style, patch)
-    if (patch.slices) this.style.slices = { ...this.style.slices, ...patch.slices }
-    if (patch.crop) this.style.crop = { ...this.style.crop, ...patch.crop }
     this.draw()
   }
 
@@ -626,6 +629,6 @@ export class ImageCube {
     if (this.volume) gl.deleteTexture(this.volume)
     if (this.ramp) gl.deleteTexture(this.ramp)
     for (const b of Object.values(this.buffers)) gl.deleteBuffer(b)
-    for (const p of [this.volumeProgram, this.sliceProgram, this.lineProgram]) gl.deleteProgram(p)
+    for (const p of [this.volumeProgram, this.sliceProgram, this.capProgram, this.lineProgram]) gl.deleteProgram(p)
   }
 }
