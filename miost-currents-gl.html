@@ -1,0 +1,171 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>MIOST Viewer — Global Currents from Multiscale Zarr (Leaflet + WebGL)</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; }
+  #map { position: absolute; inset: 0; background: #000; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.75); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 260px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel input, #panel select { width: 100%; box-sizing: border-box; }
+  #panel .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  #panel .row label { margin-top: 0; }
+  #meta { margin-top: 6px; color: #aaa; }
+  #lvl { margin-top: 4px; color: #fc6; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 3.2em; }
+  #bar { height: 10px; border-radius: 2px; margin-top: 6px; }
+  #ticks { display: flex; justify-content: space-between; color: #aaa; font-size: 11px; }
+  .chk { display: flex; align-items: center; gap: 6px; }
+  .chk input { width: auto; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>MIOST Currents — Multiscale Zarr</b>
+  <div id="meta">loading store…</div>
+  <div id="lvl"></div>
+
+  <label>go to
+    <select id="place">
+      <option value="25,-45,3">Global (Atlantic)</option>
+      <option value="30,-75,5">Gulf Stream</option>
+      <option value="35,145,5">Kuroshio</option>
+      <option value="-38,25,5">Agulhas</option>
+      <option value="-50,-60,4">Malvinas / Drake</option>
+      <option value="-2,-30,4">Equatorial Atlantic</option>
+    </select>
+  </label>
+
+  <label>current speed
+    <div id="bar"></div>
+    <div id="ticks"></div>
+  </label>
+
+  <label>raster opacity <span id="opval">75%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.75" />
+  </label>
+
+  <div class="row">
+    <label class="chk"><input id="pause" type="checkbox" /> pause particles</label>
+  </div>
+
+  <div id="readout">click the ocean for a value</div>
+</div>
+
+<script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4","zarrita":"https://esm.sh/zarrita@0.7.3"}}</script>
+<script type="module">
+import L from 'leaflet'
+import { currentLayer, CURRENT_LEGEND, speedColor } from './currents/currents-layer.js?v=1'
+import { ZarrCurrentField } from './currents/zarr-current-field.js?v=1'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+
+const el = (id) => document.getElementById(id)
+const params = new URLSearchParams(location.search)
+const resolveSource = (s) => /^https?:\/\//.test(s) ? s : new URL(s, location.href).href
+const STORE = resolveSource(params.get('store') || 'data/miost_currents_pyramid.zarr')
+
+const map = L.map('map', { center: [25, -45], zoom: 3 })
+L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+}).addTo(map)
+
+// ---------- legend ----------
+el('bar').style.background = CURRENT_LEGEND.css
+el('ticks').innerHTML = CURRENT_LEGEND.ticks.map((t) => `<span>${t}</span>`).join('')
+
+// ---------- WebGL speed raster, straight from the pyramid ----------
+// The Windy speed ramp as a 256-entry [r,g,b] list for the GL ramp texture,
+// so the raster matches the .bin page and the legend exactly.
+const RAMP_COLORS = Array.from({ length: 256 }, (_, i) =>
+  speedColor((i / 255) * 2).match(/\d+/g).map(Number))
+
+const glLayer = new ZarrGLLayer({
+  url: STORE,
+  variable: 'speed',
+  maxZoom: 12,
+  clim: [0, 2],
+  colors: RAMP_COLORS,
+  opacity: 0.75,
+})
+glLayer.addTo(map)
+
+// ---------- particles, fed by per-view zarr window reads ----------
+// rasterOpacity 0: the layer's own canvas raster stays off — colour comes from
+// the GL layer above, sampling the same pyramid.
+const layer = currentLayer({ rasterOpacity: 0 }).addTo(map)
+const field = new ZarrCurrentField(STORE)
+
+let fetchSeq = 0
+async function refetch() {
+  const seq = ++fetchSeq
+  const px = map.getSize().x
+  const b = map.getBounds()
+  const degPerPixel = (b.getEast() - b.getWest()) / Math.max(1, px)
+  try {
+    // The particle field is baked at one sample per 16 px screen cell, so it
+    // can ride a coarser pyramid level than the GL raster: 4 px per data cell
+    // still oversamples it 4x. At z3 this is the difference between fetching
+    // most of level 0 and two chunks of level 2.
+    const win = await field.fetch(b, degPerPixel * 4)
+    if (!win || seq !== fetchSeq) return
+    layer.setData(win)
+    el('lvl').textContent =
+      `level: ${win.h} × ${win.w} window @ ${win.spacingDeg.toFixed(3)}°/cell`
+  } catch (err) {
+    console.error(err)
+  }
+}
+map.on('moveend zoomend', refetch)
+
+el('opacity').oninput = () => {
+  const v = +el('opacity').value
+  glLayer.updateStyle({ opacity: v })
+  el('opval').textContent = Math.round(v * 100) + '%'
+}
+el('pause').onchange = () => layer.setPaused(el('pause').checked)
+el('place').onchange = () => {
+  const [lat, lon, z] = el('place').value.split(',').map(Number)
+  map.setView([lat, lon], z)
+}
+
+map.on('click', (e) => {
+  const r = layer.at(e.latlng.lat, e.latlng.lng, layer.cutoff())
+  if (!r) {
+    el('readout').textContent = 'no data at that point'
+    return
+  }
+  el('readout').innerHTML =
+    `speed <b>${r.speed.toFixed(3)}</b> m/s<br>` +
+    `toward ${r.dir.toFixed(0)}&deg;<br>` +
+    `u ${r.u.toFixed(3)}  v ${r.v.toFixed(3)} m/s`
+})
+
+// ---------- boot ----------
+await field.ready
+const attrs = field.uSrc.attrs ?? {}
+const nLevels = field.uSrc.levels.length
+const finest = field.uSrc.finest
+el('meta').innerHTML =
+  `MIOST L4 (DUACS exp) &middot; ${attrs.date ?? '?'}<br>` +
+  `zarr pyramid: ${nLevels} levels, finest ` +
+  `${finest.lat.size} &times; ${finest.lon.size}<br>` +
+  `${attrs.variables?.u ?? 'ugos'} / ${attrs.variables?.v ?? 'vgos'} + speed raster`
+await refetch()
+
+window.__map = map
+window.__layer = layer
+window.__gl = glLayer
+window.__field = field
+</script>
+</body>
+</html>

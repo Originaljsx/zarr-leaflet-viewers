@@ -67,6 +67,21 @@ statically.
   re-normalises over valid corners at coastlines and wraps in longitude —
   `CurrentLayer` itself is reused untouched. `?data=<url>` points the page at a
   different day.
+- **`miost-currents-gl.html`** — the same MIOST day answered the **multiscale
+  Zarr** way, as an experiment in whether the currents look work over a
+  pyramid: `tools/miost_l4_pyramid.py` writes a 4-level GeoZarr pyramid
+  (zarr v3, OME-NGFF `multiscales`, int16 at 1 mm/s — 11.6 MB on disk, smaller
+  than the flat `.bin` thanks to zstd) holding `ugos`/`vgos` plus a
+  precomputed `speed`, since the GL shader samples one variable. The speed
+  raster renders straight from the pyramid through `zarr-gl`'s `ZarrGLLayer`
+  (the Windy ramp becomes the GL ramp texture, so it matches the `.bin` page
+  exactly), and the particles are fed by `currents/zarr-current-field.js`,
+  which re-fetches only the viewport's chunks at the level the zoom resolves
+  (padded, abortable) and wraps them in a `WindowField` with the same
+  `sample()` contract — `CurrentLayer` reused untouched again. At z3 the
+  particle field rides level 2 at 0.5°/cell (~2 chunks instead of ~18), and
+  the GL raster at data resolution beats the `.bin` page's 16 px screen-cell
+  raster visibly. `?store=<url>` points the page at another pyramid.
 
 ## Currents on the native swath
 

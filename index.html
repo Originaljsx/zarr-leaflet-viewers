@@ -37,6 +37,10 @@ No backend, no tiles server.</p>
     <div class="sub">the same particle engine taken global: one MIOST/DUACS L4 daily grid (multi-mission
     altimetry incl. SWOT), 0.125°, int16-quantised. The lattice is regular, so the swath search collapses
     to index arithmetic + a bilinear blend</div></li>
+  <li><a href="miost-currents-gl.html">MIOST currents from multiscale Zarr — WebGL raster + zarr-window particles</a>
+    <div class="sub">the same day as a 4-level GeoZarr pyramid: the speed raster renders straight from the
+    pyramid in WebGL, and the particles re-fetch only the viewport's chunks at the level the zoom resolves
+    — coarse zooms move ~10× fewer bytes than the flat .bin page</div></li>
 </ul>
 </body>
 </html>
