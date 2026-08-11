@@ -500,7 +500,9 @@ export class ImageCube {
 
     // The cap is opaque, so it goes last when the camera is above it and first
     // when below -- a painter's rule, which is enough for one horizontal plane.
-    const showCap = this.style.cap !== 'none'
+    // Slices mode shows its own three planes; the cap (and the clip crop it
+    // sits on) belongs to the ray-marched views only.
+    const showCap = this.style.cap !== 'none' && this.style.mode !== 'slices'
     const cameraAbove = eye[2] > hi[2]
     if (showCap && !cameraAbove) this._drawCap(mvp, lo, hi)
     if (this.style.mode === 'slices') this._drawSlices(mvp)

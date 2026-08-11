@@ -250,7 +250,7 @@ import L from 'leaflet'
 // refresh can keep stale zarr-gl/zarr-maps JS. Bump on edits.
 import { colormapBuilder } from './zarr-maps/index.js?v=3'
 import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js?v=3'
-import { ImageCube } from './cube-gl/cube-gl.js?v=2'
+import { ImageCube } from './cube-gl/cube-gl.js?v=3'
 import * as zarr from 'zarrita'
 
 window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
