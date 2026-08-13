@@ -82,6 +82,18 @@ statically.
   particle field rides level 2 at 0.5°/cell (~2 chunks instead of ~18), and
   the GL raster at data resolution beats the `.bin` page's 16 px screen-cell
   raster visibly. `?store=<url>` points the page at another pyramid.
+- **`miost-currents-flow.html`** — the same pyramid rendered the
+  [harmony-flow-py](https://github.com/jackiryan/harmony-flow-py) way: an
+  OpenLayers **`ol/layer/Flow`** layer advects the particles entirely on the
+  GPU (contrast the two pages above, whose particles are CPU 2D-canvas). The
+  demo it borrows from feeds Flow a u/v-encoded PNG; here the
+  `DataTileSource` loader instead picks the pyramid level matching each
+  tile's resolution, reads the covering chunk window through `ZarrSource`,
+  and bilinearly resamples it into 256×256 float tiles — so the multiscale
+  behaviour carries over unchanged. Land uses their masking trick made
+  explicit: invalid samples are written with a speed above `maxSpeed`, which
+  the style expression renders transparent. Viridis ramp and EPSG:4326 view
+  to match the original's look. `?store=<url>` as above.
 
 ## Currents on the native swath
 
