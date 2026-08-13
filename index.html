@@ -41,10 +41,6 @@ No backend, no tiles server.</p>
     <div class="sub">the same day as a 4-level GeoZarr pyramid: the speed raster renders straight from the
     pyramid in WebGL, and the particles re-fetch only the viewport's chunks at the level the zoom resolves
     — coarse zooms move ~10× fewer bytes than the flat .bin page</div></li>
-  <li><a href="miost-currents-flow.html">MIOST currents, GPU particle flow — ol/layer/Flow from the zarr pyramid</a>
-    <div class="sub">the harmony-flow rendering (OpenLayers Flow layer, particles advected in shaders,
-    viridis) fed from the same multiscale zarr: each 256² data tile is resampled from the pyramid level
-    matching its resolution; invalid water = speed &gt; maxSpeed = transparent</div></li>
 </ul>
 </body>
 </html>
