@@ -12,17 +12,24 @@
 </head>
 <body>
 <h1>Zarr Leaflet Viewers</h1>
-<p class="sub">Leaflet viewers rendering multiscale zarr v3 pyramids directly in the browser
-(via a <a href="https://github.com/Originaljsx/zarr-maps">zarr-maps fork</a>), streamed from CloudFront.
-No backend, no tiles server.</p>
+<p class="sub">Leaflet viewers rendering multiscale zarr v3 pyramids directly in the browser,
+streamed from CloudFront. No backend, no tiles server. The current viewers render through
+<a href="zarr-gl/README.md">zarr-gl</a>, a custom WebGL layer with one shared canvas and
+per-tile textures — no tile-edge seams and no antimeridian/drift issues. A couple of early
+pages still render through the older <a href="https://github.com/Originaljsx/zarr-maps">zarr-maps fork</a>
+(<code>L.GridLayer</code>, one canvas per tile) and are kept only as before/after comparisons,
+linked at the bottom.</p>
 <ul>
-  <li><a href="swot-leaflet.html">SWOT SSHA — Expert 2 km / Unsmoothed 250 m</a>
-    <div class="sub">sea-surface height anomaly swaths, cycle 42; slice slider, click for value</div></li>
-  <li><a href="mur-leaflet.html">MUR SST 1 km — Nov–Dec 2025</a>
-    <div class="sub">global sea-surface temperature + anomaly; day slider, click for value (first load ~30 s)</div></li>
-  <li><a href="mur-leaflet-gl.html">MUR SST 1 km — custom WebGL layer</a>
-    <div class="sub">same data through <a href="zarr-gl/README.md">zarr-gl</a>: one canvas, per-tile textures,
-    Mercator reprojection in the shader — no antimeridian gap, no north-south drift on zoom</div></li>
+  <li><a href="swot-leaflet-gl.html">SWOT SSHA — Expert 2 km / Unsmoothed 250 m</a>
+    <div class="sub">sea-surface height anomaly swaths, cycle 42; slice slider, click for value.
+    Through zarr-gl: one shared canvas and GL context, per-tile textures, no tile seams</div></li>
+  <li><a href="mur-leaflet-gl.html">MUR SST 1 km — Nov–Dec 2025</a>
+    <div class="sub">global sea-surface temperature + anomaly; day slider, click for value.
+    Through zarr-gl: one canvas, per-tile textures, Mercator reprojection in the shader
+    — no antimeridian gap, no north-south drift on zoom</div></li>
+  <li><a href="arctic-leaflet-gl.html">SWOT SSHA — EPSG:3413 polar stereographic</a>
+    <div class="sub">SWOT data reprojected to true polar stereographic (not fake-Mercator), also
+    through zarr-gl, with pass/day/cycle mode switching and a bottom timeline control</div></li>
   <li><a href="tanager-leaflet-gl.html">Planet Tanager hyperspectral — 426 bands, EPSG:3413</a>
     <div class="sub">surface reflectance from an Icechunk store, reprojected to polar stereographic;
     band slider steps 376–2499 nm client-side, clicking the scene plots the pixel's full spectrum</div></li>
@@ -42,5 +49,9 @@ No backend, no tiles server.</p>
     pyramid in WebGL, and the particles re-fetch only the viewport's chunks at the level the zoom resolves
     — coarse zooms move ~10× fewer bytes than the flat .bin page</div></li>
 </ul>
+<p class="sub">Before/after comparisons against the old <code>L.GridLayer</code> (zarr-maps) approach,
+kept to show what the WebGL rewrite fixed — not for day-to-day use:
+<a href="swot-leaflet.html">swot-leaflet.html</a> (old SWOT page — slow, tile seams) and
+<a href="mur-leaflet.html">mur-leaflet.html</a> (old MUR page — first load ~30 s).</p>
 </body>
 </html>

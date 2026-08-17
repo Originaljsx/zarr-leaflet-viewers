@@ -166,21 +166,15 @@ there.
 A from-scratch WebGL2 Leaflet layer, built because `L.GridLayer`'s per-tile
 canvases can't share a resampling pass and show seams at tile edges.
 
-`zarr-gl/` now lives in its own repo,
-[`Originaljsx/leaflet-zarr-gl`](https://github.com/Originaljsx/leaflet-zarr-gl),
-checked out here as a **git submodule** — it turned out to be reusable well
-beyond this repo's own viewers. See that repo's README for the design notes:
-why per-fragment projection instead of a stretched texture, how tile size
-interacts with chunk size, and the fallback/fade behavior while tiles are
-loading.
-
-Cloning this repo needs one extra step to pull the submodule in:
-
-```bash
-git clone --recurse-submodules https://github.com/Originaljsx/zarr-leaflet-viewers.git
-# or, after a normal clone:
-git submodule update --init
-```
+`zarr-gl/` is developed in parallel in its own (private) repo,
+[`Originaljsx/leaflet-zarr-gl`](https://github.com/Originaljsx/leaflet-zarr-gl)
+— it turned out to be reusable well beyond this repo's own viewers. The files
+here are a **plain vendored copy**, not a git submodule, so GitHub Pages can
+build this repo without needing auth to a second (private) repo. That means
+changes currently have to be synced manually between the two — see that
+repo's README for the design notes: why per-fragment projection instead of a
+stretched texture, how tile size interacts with chunk size, and the
+fallback/fade behavior while tiles are loading.
 
 ## EMIT store layout
 

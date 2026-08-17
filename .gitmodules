@@ -1,3 +1,0 @@
-[submodule "zarr-gl"]
-	path = zarr-gl
-	url = https://github.com/Originaljsx/leaflet-zarr-gl.git
