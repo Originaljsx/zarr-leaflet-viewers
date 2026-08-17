@@ -12,14 +12,29 @@ or through `zarr-gl/`, a custom WebGL layer written for this repo. There is no
 server, no tile cache, and no build step — open a file, or serve the directory
 statically.
 
+**Which page to open:** the `-gl` pages (`mur-leaflet-gl.html`,
+`swot-leaflet-gl.html`, `arctic-leaflet-gl.html`, `tanager-leaflet-gl.html`,
+`emit-leaflet-gl.html`, `miost-currents-gl.html`) are the current recommended
+viewers — they render through `zarr-gl`, the WebGL layer with no tile-seam or
+antimeridian issues. `mur-leaflet.html` and `swot-leaflet.html` are kept only
+as **before/after comparisons** against the old `zarr-maps/leaflet`
+(`L.GridLayer`) approach — open them to see what the fix replaced, not as a
+day-to-day viewer.
+
 ## Pages
 
+- **`swot-leaflet.html`** — the *old* way, kept as a before/after comparison:
+  SWOT sea-surface height anomaly (`ssha`), absolute dynamic topography
+  (`adt`), and normalized backscatter (`sig0`), at either the Expert 2 km or
+  Unsmoothed 250 m resolution. A slider steps through passes with
+  cycle/date/pass labels read from the store; clicking the map reports a
+  value. Uses `zarr-maps/leaflet`, so it has the same per-tile-canvas seams
+  and slow first load as `mur-leaflet.html` below.
+- **`swot-leaflet-gl.html`** — the same SWOT data (same stores, same
+  variables, same resolution toggle and slice slider) through `zarr-gl`
+  instead: one shared canvas and GL context, per-tile textures, no
+  `L.GridLayer` seams. This is the one to use day-to-day.
 - **`index.html`** — landing page linking the viewers below.
-- **`swot-leaflet.html`** — SWOT sea-surface height anomaly (`ssha`), absolute
-  dynamic topography (`adt`), and normalized backscatter (`sig0`), at either
-  the Expert 2 km or Unsmoothed 250 m resolution. A slider steps through
-  passes with cycle/date/pass labels read from the store; clicking the map
-  reports a value. Uses `zarr-maps/leaflet`.
 - **`mur-leaflet.html`** — MUR SST 1 km, sea-surface temperature and anomaly,
   with a day slider. Also `zarr-maps/leaflet`; first load is slow (~30 s)
   because `L.GridLayer` gives every tile its own canvas and each tile

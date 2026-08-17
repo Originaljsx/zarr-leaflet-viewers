@@ -1,0 +1,398 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>SWOT Zarr Viewer (Leaflet, custom WebGL layer)</title>
+<link rel="stylesheet" href="https://esm.sh/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { margin: 0; font-family: monospace; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1000;
+    background: rgba(0,0,0,.75); color: #eee; padding: 10px 12px;
+    border-radius: 6px; font-size: 12px; width: 240px;
+  }
+  #panel label { display: block; margin-top: 8px; }
+  #panel input, #panel select { width: 100%; box-sizing: border-box; }
+  #panel select:disabled { opacity: .4; }
+  #panel .row { display: flex; gap: 6px; }
+  #panel .row label { flex: 1; }
+  #readout { margin-top: 8px; color: #9fd; min-height: 1em; }
+  #meta { margin-top: 6px; color: #aaa; min-height: 1em; }
+  #warn { margin-top: 4px; color: #fc6; min-height: 1em; }
+  #slicelabel { color: #ccc; }
+  .projbtn {
+    flex: 1; padding: 4px 0; font: inherit; font-size: 12px; cursor: pointer;
+    background: #222; color: #ccc; border: 1px solid #555; border-radius: 4px;
+  }
+  .projbtn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .projbtn:disabled { opacity: .35; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <b>SWOT Zarr Viewer (Leaflet + WebGL)</b>
+  <div id="meta">loading store…</div>
+  <div id="warn"></div>
+  <div class="row" id="resrow">
+    <button type="button" id="res-2km" class="projbtn">2 km</button>
+    <button type="button" id="res-250m" class="projbtn">250 m</button>
+  </div>
+  <label>variable
+    <select id="varsel"></select>
+  </label>
+  <label>colormap
+    <select id="cmap"></select>
+  </label>
+  <div class="row">
+    <label>min <input id="cmin" type="number" step="0.05" /></label>
+    <label>max <input id="cmax" type="number" step="0.05" /></label>
+  </div>
+  <label>opacity <span id="opval">100%</span>
+    <input id="opacity" type="range" min="0" max="1" step="0.05" value="1" />
+  </label>
+  <label>slice <span id="slicelabel"></span>
+    <input id="slice" type="range" min="0" max="0" step="1" value="0" />
+  </label>
+  <div id="readout">click swath for value</div>
+</div>
+<script type="importmap">{"imports":{"leaflet":"https://esm.sh/leaflet@1.9.4","zarrita":"https://esm.sh/zarrita@0.7.3"}}</script>
+<script type="module">
+import L from 'leaflet'
+import * as zarr from 'zarrita'
+// Colormaps only -- the layer itself has no zarr-maps dependency.
+import { colormapBuilder } from './zarr-maps/index.js'
+import { ZarrGLLayer } from './zarr-gl/zarr-gl-layer.js'
+
+window.onerror = (m, s, l, c, e) => console.error('ERROR:', m, e?.stack ?? '')
+window.onunhandledrejection = (e) => console.error('REJECTION:', e.reason?.stack ?? e.reason)
+
+const el = (id) => document.getElementById(id)
+
+// per-variable display defaults; colormap names must exist in zarr-maps'
+// jsColormaps module (src/core/jsColormaps.ts / allColorScales) since
+// colormapBuilder() draws from the same table.
+const VARS = {
+  ssha: { clim: [-0.3, 0.3], cmap: 'RdBu',  units: 'm', label: 'SSHA' },
+  adt:  { clim: [-1.5, 1.5], cmap: 'turbo', units: 'm', label: 'ADT' },
+  sig0: { clim: [5, 30],     cmap: 'Greys', units: '',  label: 'sigma0' },
+}
+// curated colormap list (all verified present in zarr-maps jsColormaps)
+const COLORMAP_NAMES = [
+  'RdBu', 'RdBu_r', 'coolwarm', 'seismic', 'Spectral', 'RdYlBu',
+  'turbo', 'viridis', 'plasma', 'magma', 'inferno', 'cividis',
+  'Greys', 'Greys_r', 'YlOrRd', 'YlGnBu',
+]
+
+// resolution toggle presets, same stores as swot-leaflet.html.
+const RES = {
+  '2km':  { store: 'https://d1ef9node0gwi2.cloudfront.net/c42_43_expert_pyramid_v2.zarr',      label: 'SWOT Expert 2 km',      vars: ['ssha', 'adt', 'sig0'] },
+  '250m': { store: 'https://d1ef9node0gwi2.cloudfront.net/c42_43_unsm_250m_pyramid.zarr',      label: 'SWOT Unsmoothed 250 m', vars: ['ssha', 'sig0'] },
+}
+
+const resolveSource = (store) => /^https?:\/\//.test(store) ? store : new URL(store, location.href).href
+
+const params = new URLSearchParams(location.search)
+let res = RES[params.get('res')] ? params.get('res') : '2km'
+let storeOverride = params.get('store')   // applies only to the initial store; dropped on manual toggle
+let availVars = RES[res].vars
+let cur = params.get('var')
+if (!cur || !availVars.includes(cur)) cur = availVars[0]
+let source = resolveSource(storeOverride ?? RES[res].store)
+
+const metaEl = el('meta'), warnEl = el('warn'), readoutEl = el('readout')
+const varSel = el('varsel'), cmapSel = el('cmap'), cminInput = el('cmin'), cmaxInput = el('cmax')
+const opacitySlider = el('opacity'), opVal = el('opval')
+const sliceSlider = el('slice'), sliceLabel = el('slicelabel')
+const btn2km = el('res-2km'), btn250m = el('res-250m')
+
+for (const name of COLORMAP_NAMES) cmapSel.add(new Option(name, name))
+
+const map = L.map('map', { center: [20, -45], zoom: 2 })
+L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+}).addTo(map)
+
+// ---------- zarrita side-channel: click -> value lookup ----------
+// Same consolidated-metadata-pinned-v3 store open, same pyramid level choice
+// (level "0", the finest / native-resolution asset), same nearest-neighbor
+// lat/lon -> row/col index math as swot-leaflet.html — only the rendering
+// layer below changes.
+const sideChannels = new Map()   // source url -> { ready, store, root, arrays, grid }
+
+async function ensureSideChannel(src) {
+  if (!sideChannels.has(src)) sideChannels.set(src, { arrays: new Map(), grid: null, ready: null })
+  const sc = sideChannels.get(src)
+  if (!sc.ready) {
+    sc.ready = (async () => {
+      const store = await zarr.extendStore(
+        new zarr.FetchStore(src, { overrides: { cache: 'no-store' } }),
+        // v3 stores only — without the format pin this probes v2 .zmetadata (404)
+        (s) => zarr.withMaybeConsolidatedMetadata(s, { format: 'v3' }).catch(() => s),
+      )
+      sc.root = zarr.root(store)
+    })()
+  }
+  await sc.ready
+  return sc
+}
+
+async function getArray(sc, name) {
+  if (!sc.arrays.has(name)) {
+    sc.arrays.set(name, zarr.open(sc.root.resolve(`0/${name}`), { kind: 'array' }))
+  }
+  return await sc.arrays.get(name)
+}
+
+async function getGrid(sc) {
+  if (!sc.grid) {
+    sc.grid = (async () => {
+      const [laArr, loArr] = await Promise.all([getArray(sc, 'latitude'), getArray(sc, 'longitude')])
+      const [la, lo] = await Promise.all([
+        zarr.get(laArr, [zarr.slice(0, 2)]),
+        zarr.get(loArr, [zarr.slice(0, 2)]),
+      ])
+      return {
+        lat0: la.data[0], dlat: la.data[1] - la.data[0],
+        lon0: lo.data[0], dlon: lo.data[1] - lo.data[0],
+        ny: laArr.shape[0], nx: loArr.shape[0],
+      }
+    })()
+  }
+  return await sc.grid
+}
+
+async function readPointValue(src, variable, sliceIdx, lat, lon) {
+  const sc = await ensureSideChannel(src)
+  const arr = await getArray(sc, variable)
+  const g = await getGrid(sc)
+  const lonN = ((lon + 180) % 360 + 360) % 360 - 180
+  const y = Math.min(g.ny - 1, Math.max(0, Math.round((lat - g.lat0) / g.dlat)))
+  const x = Math.min(g.nx - 1, Math.max(0, Math.round((lonN - g.lon0) / g.dlon)))
+  return await zarr.get(arr, [sliceIdx, y, x])
+}
+
+// ---------- slices.json (date/cycle/pass labels for the slider) ----------
+let slices = []
+let curSliceIdx = 0
+
+function updateSliceLabel() {
+  if (slices.length) {
+    const s = slices[curSliceIdx]
+    sliceLabel.textContent = s ? `${s.date} · c${s.cycle}/p${s.pass}` : '—'
+  } else {
+    sliceLabel.textContent = `index ${curSliceIdx}`
+  }
+}
+
+// time-dim index for the currently selected slice: normally slices[i].i,
+// falling back to the raw slider index when slices.json is unavailable.
+const currentTimeSelected = () => slices.length ? (slices[curSliceIdx]?.i ?? curSliceIdx) : curSliceIdx
+
+async function buildFallbackSlider() {
+  try {
+    const sc = await ensureSideChannel(source)
+    const arr = await getArray(sc, cur)
+    const n = arr.shape[0]
+    sliceSlider.min = 0; sliceSlider.max = Math.max(0, n - 1); sliceSlider.step = 1; sliceSlider.value = 0
+  } catch (err) {
+    console.error('fallback slider shape lookup failed', err)
+    sliceSlider.min = 0; sliceSlider.max = 0; sliceSlider.step = 1; sliceSlider.value = 0
+  }
+  curSliceIdx = 0
+  updateSliceLabel()
+}
+
+function buildSliderFromSlices() {
+  sliceSlider.min = 0
+  sliceSlider.max = Math.max(0, slices.length - 1)
+  sliceSlider.step = 1
+  sliceSlider.value = 0
+  curSliceIdx = 0
+  updateSliceLabel()
+}
+
+// ---------- layer lifecycle ----------
+// zarr-gl's ZarrGLLayer has no setVariable API either, so variable + mode
+// changes still rebuild the layer; colormap/clim/opacity go through
+// updateStyle and the slice slider through updateSelectors — neither
+// rebuilds. Same opId + rAF-yield serialization as swot-leaflet.html to
+// avoid stacking destroy/create across rapid control changes.
+let layer = null
+let curOpacity = 1
+let layerOpId = 0
+
+const rampFor = (name) => colormapBuilder(name)
+
+function destroyLayer() {
+  if (layer) { map.removeLayer(layer); layer = null }
+}
+
+async function createLayer() {
+  const opId = ++layerOpId
+  destroyLayer()
+  await new Promise((r) => requestAnimationFrame(r))
+  if (opId !== layerOpId) return   // superseded while yielding
+
+  const newLayer = new ZarrGLLayer({
+    url: source,
+    variable: cur,
+    maxZoom: 12,
+    clim: [parseFloat(cminInput.value), parseFloat(cmaxInput.value)],
+    colors: rampFor(cmapSel.value),
+    opacity: curOpacity,
+    selectors: { time: currentTimeSelected() },
+  })
+  layer = newLayer
+  newLayer.addTo(map)
+  try {
+    await newLayer.readyPromise
+    if (opId !== layerOpId) { try { map.removeLayer(newLayer) } catch {} ; return }
+    updateMeta()
+  } catch (err) {
+    if (opId !== layerOpId) return
+    warnEl.textContent = 'layer load error (see console)'
+    console.error(err)
+  }
+}
+
+function updateMeta() {
+  const levels = layer?.source?.levels ?? []
+  const detail = levels.length ? ` — ${levels.length} levels` : ''
+  metaEl.textContent = `${RES[res].label} — ${VARS[cur].label} (${cur})${detail}`
+}
+
+function setVarDefaults() {
+  const cfg = VARS[cur]
+  cmapSel.value = cfg.cmap
+  cminInput.value = cfg.clim[0]
+  cmaxInput.value = cfg.clim[1]
+}
+
+function rebuildVarSelect() {
+  varSel.innerHTML = ''
+  for (const v of availVars) varSel.add(new Option(`${VARS[v].label} (${v})`, v))
+  varSel.value = cur
+}
+
+async function loadStoreAndLayer() {
+  destroyLayer()
+  metaEl.textContent = 'loading store…'
+  warnEl.textContent = ''
+  slices = []
+  curSliceIdx = 0
+  try {
+    const r = await fetch(`${source}/slices.json`, { cache: 'no-store' })
+    if (!r.ok) throw new Error(`slices.json ${r.status}`)
+    slices = await r.json()
+    buildSliderFromSlices()
+  } catch (err) {
+    console.error('slices.json missing/failed', err)
+    warnEl.textContent = 'slices.json missing — falling back to index-only slider'
+    await buildFallbackSlider()
+  }
+  createLayer()
+  updateMeta()
+}
+
+// ---------- resolution toggle ----------
+function syncResButtons() {
+  btn2km.classList.toggle('active', res === '2km')
+  btn250m.classList.toggle('active', res === '250m')
+}
+function switchRes(k) {
+  if (k === res) return
+  storeOverride = null   // manual toggle always uses the preset store
+  res = k
+  availVars = RES[res].vars
+  if (!availVars.includes(cur)) cur = availVars[0]
+  source = resolveSource(RES[res].store)
+  syncResButtons()
+  rebuildVarSelect()
+  setVarDefaults()
+  loadStoreAndLayer()
+}
+btn2km.onclick = () => switchRes('2km')
+btn250m.onclick = () => switchRes('250m')
+
+// ---------- control wiring ----------
+varSel.onchange = () => {
+  cur = varSel.value
+  setVarDefaults()
+  createLayer()      // no setVariable API on ZarrGLLayer -> rebuild
+  updateMeta()
+}
+
+cmapSel.onchange = () => {
+  if (layer) layer.updateStyle({ colors: rampFor(cmapSel.value) })
+}
+
+function applyClim() {
+  const lo = parseFloat(cminInput.value)
+  const hi = parseFloat(cmaxInput.value)
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) {
+    warnEl.textContent = 'invalid clim range (min must be < max)'
+    return
+  }
+  if (warnEl.textContent.startsWith('invalid clim')) warnEl.textContent = ''
+  if (layer) layer.updateStyle({ clim: [lo, hi] })
+}
+cminInput.onchange = applyClim
+cmaxInput.onchange = applyClim
+
+opacitySlider.oninput = () => {
+  curOpacity = parseFloat(opacitySlider.value)
+  opVal.textContent = `${Math.round(curOpacity * 100)}%`
+  if (layer) layer.updateStyle({ opacity: curOpacity })
+}
+
+let sliceTimer
+sliceSlider.oninput = () => {
+  curSliceIdx = +sliceSlider.value
+  updateSliceLabel()
+  clearTimeout(sliceTimer)
+  sliceTimer = setTimeout(() => {
+    if (layer) layer.updateSelectors({ time: currentTimeSelected() })
+  }, 80)
+}
+
+map.on('click', async (e) => {
+  const { lat, lng } = e.latlng
+  const where = `${lat.toFixed(3)}, ${lng.toFixed(3)}`
+  readoutEl.textContent = `${where}: reading…`
+  try {
+    const sliceIdx = currentTimeSelected()
+    const raw = await readPointValue(source, cur, sliceIdx, lat, lng)
+    const v = Number(raw)
+    if (raw == null || Number.isNaN(v)) {
+      readoutEl.textContent = `${where}: no data`
+    } else {
+      const s = slices[curSliceIdx]
+      const ctx = s ? `(c${s.cycle} p${s.pass}, ${s.date})` : ''
+      readoutEl.textContent = `${where}: ${v.toFixed(3)} ${VARS[cur].units} ${ctx}`.trim()
+    }
+  } catch (err) {
+    console.error(err)
+    readoutEl.textContent = `${where}: lookup failed (see console)`
+  }
+})
+
+// ---------- boot ----------
+syncResButtons()
+rebuildVarSelect()
+setVarDefaults()
+loadStoreAndLayer()
+
+// test/debug hook only — not used by the UI itself
+window.__swot = {
+  readPointValue,
+  currentTimeSelected,
+  get layer() { return layer },
+  get source() { return source },
+  get cur() { return cur },
+}
+window.__leafletMap = map
+</script>
+</body>
+</html>
