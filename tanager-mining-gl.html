@@ -282,9 +282,9 @@ const BASEMAPS = {
   imagery: { label: 'Esri World Imagery', build: () => L.tileLayer(
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     { maxZoom: 18, attribution: 'Esri, Maxar, Earthstar Geographics' }) },
-  dark: { label: 'CARTO dark', build: () => L.tileLayer(
-    'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-    { maxZoom: 17, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }) },
+  dark: { label: 'Blue Marble (NASA GIBS)', build: () => L.tileLayer(
+    'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg',
+    { maxZoom: 17, maxNativeZoom: 8, attribution: 'NASA GIBS' }) },
   osm: { label: 'OpenStreetMap', build: () => L.tileLayer(
     'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }) },

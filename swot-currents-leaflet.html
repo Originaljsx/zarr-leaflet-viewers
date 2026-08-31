@@ -66,8 +66,8 @@ const params = new URLSearchParams(location.search)
 const DATA = params.get('data') || 'data/swot_currents_c023_p091.json'
 
 const map = L.map('map', { center: [30, -79.5], zoom: 6, worldCopyJump: true })
-L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
-  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg', {
+  maxZoom: 12, maxNativeZoom: 8, attribution: 'NASA GIBS',
 }).addTo(map)
 
 // ---------- legend ----------

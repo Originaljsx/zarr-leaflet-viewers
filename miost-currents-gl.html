@@ -75,8 +75,8 @@ const resolveSource = (s) => /^https?:\/\//.test(s) ? s : new URL(s, location.hr
 const STORE = resolveSource(params.get('store') || 'data/miost_currents_pyramid.zarr')
 
 const map = L.map('map', { center: [25, -45], zoom: 3 })
-L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
-  maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg', {
+  maxZoom: 12, maxNativeZoom: 8, attribution: 'NASA GIBS',
 }).addTo(map)
 
 // ---------- legend ----------

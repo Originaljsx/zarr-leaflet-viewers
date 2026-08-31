@@ -50,7 +50,7 @@
   </label>
   <label>basemap
     <select id="basemap">
-      <option value="dark">dark (Carto)</option>
+      <option value="dark">Blue Marble (NASA GIBS)</option>
       <option value="gebco">GEBCO bathymetry</option>
       <option value="esri">ESRI Ocean (labels)</option>
     </select>
@@ -124,8 +124,8 @@ const map = L.map('map', { center: [20, -45], zoom: 2 })
 // ---------- basemaps (data layer lives in the overlay pane, above these) ----------
 const BASEMAPS = {
   dark: () => [
-    L.tileLayer('https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
-      maxZoom: 12, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }),
+    L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpg', {
+      maxZoom: 12, maxNativeZoom: 8, attribution: 'NASA GIBS' }),
   ],
   gebco: () => [
     L.tileLayer.wms('https://wms.gebco.net/mapserv?', {
