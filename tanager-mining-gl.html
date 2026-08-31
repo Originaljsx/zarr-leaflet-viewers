@@ -177,8 +177,8 @@
   <label>threshold <span id="cube-thval"></span>
     <input id="cube-threshold" type="range" min="0" max="1" step="0.001" value="0" />
   </label>
-  <label id="cube-density-row">density <span id="cube-dval">0.60</span>
-    <input id="cube-density" type="range" min="0.05" max="2" step="0.05" value="0.6" />
+  <label id="cube-density-row">density <span id="cube-dval">1.00</span>
+    <input id="cube-density" type="range" min="0.05" max="2" step="0.05" value="1" />
   </label>
   <div id="cube-slice-rows" style="display:none;">
     <label>band slice <span id="cube-zval"></span>
@@ -738,6 +738,7 @@ function ensureCube() {
   if (cube) return cube
   cube = new ImageCube(el('cube-canvas'))
   cube.setColormap(colormapBuilder(el('cmap').value))
+  cube.setStyle({ density: parseFloat(el('cube-density').value) })   // slider is the default, not the lib's 0.6
   // The panel corner is draggable (CSS resize), so redraw when the canvas moves.
   new ResizeObserver(() => cube?.draw()).observe(el('cube-canvas'))
   return cube
